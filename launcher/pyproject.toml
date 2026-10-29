@@ -1,0 +1,12 @@
+[project]
+name = "ovrl"
+version = "0.0.1"
+description = "Launcher for Oculus Rift Store games on Linux via Proton"
+requires-python = ">=3.9"
+
+[project.scripts]
+ovrl = "ovrl.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

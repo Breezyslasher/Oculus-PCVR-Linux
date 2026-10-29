@@ -1,0 +1,29 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain and Wine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine64
+      - name: Build
+        run: make
+      - name: Smoke tests under Wine
+        env:
+          WINEPREFIX: ${{ runner.temp }}/wineprefix
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+        run: make check WINE=/usr/lib/wine/wine64
+      - name: Launcher sanity
+        run: cd launcher && python3 -m ovrl exports ../build/LibOVRPlatform64_1.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ovrstub-dlls
+          path: build/*.dll build/ovrinject.exe
