@@ -29,4 +29,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ovrstub-dlls
-          path: build/*.dll build/ovrinject.exe
+          if-no-files-found: error
+          path: |
+            build/LibOVRPlatform64_1.dll
+            build/LibOVRRT64_1.dll
+            build/ovrinject.exe

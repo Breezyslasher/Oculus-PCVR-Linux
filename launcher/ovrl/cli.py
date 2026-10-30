@@ -194,7 +194,7 @@ def cmd_download(args: argparse.Namespace) -> int:
         live = [b for b in builds if any(c.upper() == "LIVE" for c in b.channels)]
         chosen = (live or builds)[0]
         build_id = chosen.id
-        print(f"{name}: build {chosen.id}, version {chosen.version}")
+        print(f"{name or args.app_id}: build {chosen.id}, version {chosen.version}")
     dest = Path(args.dest) if args.dest else Path.cwd() / f"{args.app_id}-{build_id}"
     manifest = download_build(token, build_id, dest, workers=args.jobs)
     print(f"done: {dest}")
