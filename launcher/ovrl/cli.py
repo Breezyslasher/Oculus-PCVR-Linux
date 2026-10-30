@@ -77,7 +77,10 @@ def _wine_prefix(prefix: Path) -> Path:
 def _install_file(src: Path, target: Path, label: str) -> None:
     """Copy src to target, backing up any pre-existing non-ours file first."""
     backup = target.with_name(target.name + BACKUP_SUFFIX)
-    if target.exists() and not backup.exists() and not _is_our_stub(target):
+    # The injector and shim are ours alone (no game ships them), so a
+    # previous copy is never an original worth keeping.
+    ours = target.name in (INJECTOR, SHIM_INJECT_NAME)
+    if target.exists() and not backup.exists() and not ours and not _is_our_stub(target):
         shutil.copy2(target, backup)
         print(f"backed up original to {backup}")
     shutil.copy2(src, target)
@@ -285,24 +288,9 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     the injector, which starts the game with the shim injected.
     """
     exe = Path(args.game_exe)
-    if not exe.is_file():
-        sys.exit(f"ovrl: {exe} not found")
     exe_dir = exe.parent
-    build = Path(args.build)
-
-    # Genuine runtime + Platform stub next to the exe for the signature check.
-    _install_stubs(exe_dir, build, args.real_runtime, args.real_platform)
-    # Our shim (distinct name), the injector and OpenVR beside the exe.
-    _install_file(_build_file(build, RUNTIME_DLL), exe_dir / SHIM_INJECT_NAME, "shim")
-    _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
-
-    openvr = _find_openvr_api(args.openvr)
-    if openvr:
-        _install_file(openvr, exe_dir / OPENVR_DLL, OPENVR_DLL)
-    else:
-        print(f"ovrl: warning: {OPENVR_DLL} not found; VR output will be "
-              "unavailable until it is present. Pass --openvr <path> or "
-              "install SteamVR.", file=sys.stderr)
+    stage_game(exe, Path(args.build), args.real_runtime, args.real_platform,
+               args.openvr, log=lambda m: print(m, file=sys.stderr))
 
     # Steam runs the launch options as a shell command with %command% expanded
     # to `proton run <target.exe>`. A leading VAR=val sets an env var that
@@ -353,7 +341,8 @@ def _steam_root() -> Path | None:
                  Path.home() / ".steam/root",
                  Path.home() / ".steam/debian-installation",
                  Path.home() / ".local/share/Steam",
-                 Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam"):
+                 Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                 Path.home() / "snap/steam/common/.local/share/Steam"):
         if (cand / "userdata").is_dir() and (cand / "config").is_dir():
             return cand.resolve()
     return None
@@ -391,27 +380,15 @@ def _prefix_proton_tool(prefix: Path | None, cfg: dict) -> str | None:
     return None
 
 
-def cmd_add_to_steam(args: argparse.Namespace) -> int:
-    """Write the non-Steam shortcut and Proton mapping, as Heroic does.
-
-    Edits userdata/<id>/config/shortcuts.vdf (binary) and config/config.vdf
-    (text) directly instead of going through the Steam UI. Steam rewrites both
-    on exit, so it must be closed while we work. Each file is backed up and
-    must round-trip through our parser before we change it.
-    """
-    exe = Path(args.game_exe).resolve()
-    exe_dir = exe.parent
-    for name in (INJECTOR, SHIM_INJECT_NAME):
-        if not (exe_dir / name).is_file():
-            sys.exit(f"ovrl: {exe_dir / name} missing; run `ovrl steam-setup` first")
-
-    root = Path(args.steam_root).expanduser() if args.steam_root else _steam_root()
+def steam_user_dir(steam_root: str | None, steam_user: str | None) -> tuple[Path, Path]:
+    """(Steam install root, userdata/<id>) to edit; exits with a reason if unclear."""
+    root = Path(steam_root).expanduser() if steam_root else _steam_root()
     if not root or not (root / "userdata").is_dir():
         sys.exit("ovrl: Steam install not found; pass --steam-root")
     users = sorted(p for p in (root / "userdata").iterdir()
                    if p.name.isdigit() and p.name != "0")
-    if args.steam_user:
-        user_dir = root / "userdata" / args.steam_user
+    if steam_user:
+        user_dir = root / "userdata" / steam_user
     elif len(users) == 1:
         user_dir = users[0]
     else:
@@ -419,26 +396,48 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
                  "with one of: " + ", ".join(u.name for u in users))
     if not user_dir.is_dir():
         sys.exit(f"ovrl: {user_dir} not found")
+    return root, user_dir
 
+
+def add_shortcuts(games: list[dict], prefix: str | None = None,
+                  proton_tool: str | None = None, steam_root: str | None = None,
+                  steam_user: str | None = None, log=print) -> None:
+    """Add (or update) non-Steam shortcuts for staged games, as Heroic does.
+
+    Each game is {"exe": path, "name": str, "hmd": str}. Edits
+    userdata/<id>/config/shortcuts.vdf (binary) and config/config.vdf (text)
+    directly, reading and writing each file once for the whole batch. Steam
+    rewrites both on exit, so it must be closed. Each file is backed up and
+    must round-trip through our parser before we change it. Exits with a
+    reason on any problem, before writing anything.
+    """
+    root, user_dir = steam_user_dir(steam_root, steam_user)
     if _steam_running():
         sys.exit("ovrl: Steam is running; quit it fully first (it overwrites its "
                  "config on exit, which would discard this change)")
-
-    name = args.name or exe.stem.replace("-Win64-Shipping", "")
-    exe_field = f'"{exe_dir / INJECTOR}"'
-    start_field = f'"{exe_dir}/"'
-    appid = steam.shortcut_appid(exe_field, name)
-    prefix = None
-    if args.prefix:
-        prefix = Path(args.prefix).expanduser().resolve()
-        if not (_wine_prefix(prefix) / "drive_c").is_dir():
-            sys.exit(f"ovrl: {prefix} is not an initialized Proton prefix")
-        if " " in str(prefix):
-            sys.exit(f"ovrl: {prefix} contains a space, which Steam launch "
+    pfx = None
+    if prefix:
+        pfx = Path(prefix).expanduser().resolve()
+        if not (_wine_prefix(pfx) / "drive_c").is_dir():
+            sys.exit(f"ovrl: {pfx} is not an initialized Proton prefix")
+        if " " in str(pfx):
+            sys.exit(f"ovrl: {pfx} contains a space, which Steam launch "
                      "options can't carry in a VAR=val prefix")
-    entry = steam.make_entry(appid, name, exe_field, start_field,
-                             _steam_launch_options(exe, args.hmd, prefix),
-                             openvr=True)
+
+    planned = []
+    for g in games:
+        exe = Path(g["exe"]).resolve()
+        exe_dir = exe.parent
+        for name in (INJECTOR, SHIM_INJECT_NAME):
+            if not (exe_dir / name).is_file():
+                sys.exit(f"ovrl: {exe_dir / name} missing; run `ovrl steam-setup` first")
+        name = g.get("name") or exe.stem.replace("-Win64-Shipping", "")
+        exe_field = f'"{exe_dir / INJECTOR}"'
+        appid = steam.shortcut_appid(exe_field, name)
+        entry = steam.make_entry(appid, name, exe_field, f'"{exe_dir}/"',
+                                 _steam_launch_options(exe, g.get("hmd"), pfx),
+                                 openvr=True)
+        planned.append((name, exe_field, appid, entry))
 
     # --- shortcuts.vdf ---
     shortcuts = user_dir / "config" / "shortcuts.vdf"
@@ -448,39 +447,76 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
         if steam.dump_shortcuts(top) != orig:
             sys.exit(f"ovrl: refusing to edit {shortcuts}: it doesn't round-trip "
                      "through our parser, so writing could lose entries")
-        shutil.copy2(shortcuts, shortcuts.with_suffix(".vdf.ovrl-bak"))
     else:
-        shortcuts.parent.mkdir(parents=True, exist_ok=True)
         top = [[0x00, "shortcuts", []]]
-    action = steam.upsert_shortcut(top, name, exe_field, entry)
-    shortcuts.write_bytes(steam.dump_shortcuts(top))
-    print(f"{action} shortcut \"{name}\" (appid {appid}) in {shortcuts}")
 
-    # --- config.vdf: force Proton for this shortcut ---
+    # --- config.vdf: force Proton for each shortcut ---
     config = root / "config" / "config.vdf"
+    cfg = None
+    tool = None
     if config.is_file():
-        text = config.read_text(encoding="utf-8")
-        cfg = steam.parse_text_vdf(text)
+        cfg = steam.parse_text_vdf(config.read_text(encoding="utf-8"))
         if steam.parse_text_vdf(steam.dump_text_vdf(cfg)) != cfg:
             sys.exit(f"ovrl: refusing to edit {config}: it doesn't round-trip "
                      "through our parser")
-        tool = args.proton_tool or _prefix_proton_tool(prefix, cfg) \
+        tool = proton_tool or _prefix_proton_tool(pfx, cfg) \
             or steam.detect_proton_tool(cfg)
-        if tool:
-            shutil.copy2(config, config.with_suffix(".vdf.ovrl-bak"))
-            steam.set_compat_tool(cfg, appid, tool)
-            config.write_text(steam.dump_text_vdf(cfg), encoding="utf-8")
-            print(f"set compatibility tool to {tool} in {config}")
-        else:
-            print("ovrl: no Proton mapping found to copy; after starting Steam, "
-                  "open the entry's Properties > Compatibility and force Proton "
-                  "(or rerun with --proton-tool <name>)", file=sys.stderr)
-    else:
-        print(f"ovrl: {config} not found; force Proton in the entry's Properties",
-              file=sys.stderr)
 
+    if shortcuts.is_file():
+        shutil.copy2(shortcuts, shortcuts.with_suffix(".vdf.ovrl-bak"))
+    else:
+        shortcuts.parent.mkdir(parents=True, exist_ok=True)
+    for name, exe_field, appid, entry in planned:
+        action = steam.upsert_shortcut(top, name, exe_field, entry)
+        log(f"{action} shortcut \"{name}\" (appid {appid})")
+        if cfg is not None and tool:
+            steam.set_compat_tool(cfg, appid, tool)
+    shortcuts.write_bytes(steam.dump_shortcuts(top))
+    log(f"wrote {shortcuts}")
+    if ".var/app/com.valvesoftware.Steam" in str(root):
+        dirs = sorted({str(Path(g["exe"]).resolve().parent) for g in games})
+        log("note: Flatpak Steam only sees folders it is allowed to; if a game "
+            "won't start, run: flatpak override --user " +
+            " ".join(f"--filesystem={d}" for d in dirs) + " com.valvesoftware.Steam")
+
+    if cfg is not None and tool:
+        shutil.copy2(config, config.with_suffix(".vdf.ovrl-bak"))
+        config.write_text(steam.dump_text_vdf(cfg), encoding="utf-8")
+        log(f"set compatibility tool to {tool} in {config}")
+    else:
+        log("ovrl: no Proton mapping set; after starting Steam, open each entry's "
+            "Properties > Compatibility and force Proton (or pass --proton-tool)")
+
+
+def cmd_add_to_steam(args: argparse.Namespace) -> int:
+    """Write the non-Steam shortcut and Proton mapping for one staged game."""
+    add_shortcuts([{"exe": args.game_exe, "name": args.name, "hmd": args.hmd}],
+                  prefix=args.prefix, proton_tool=args.proton_tool,
+                  steam_root=args.steam_root, steam_user=args.steam_user)
+    name = args.name or Path(args.game_exe).stem.replace("-Win64-Shipping", "")
     print(f"\nStart Steam: \"{name}\" is in your library. Start SteamVR, then Play.")
     return 0
+
+
+def stage_game(exe: Path, build: Path, real_runtime: str | None,
+               real_platform: str | None, openvr: str | None, log=print) -> None:
+    """Put the genuine runtime, Platform stub, shim, injector and OpenVR beside
+    a game's exe so Steam can launch it through the injector."""
+    if not exe.is_file():
+        sys.exit(f"ovrl: {exe} not found")
+    exe_dir = exe.parent
+    # Genuine runtime + Platform stub next to the exe for the signature check.
+    _install_stubs(exe_dir, build, real_runtime, real_platform)
+    # Our shim (distinct name), the injector and OpenVR beside the exe.
+    _install_file(_build_file(build, RUNTIME_DLL), exe_dir / SHIM_INJECT_NAME, "shim")
+    _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
+    found = _find_openvr_api(openvr)
+    if found:
+        _install_file(found, exe_dir / OPENVR_DLL, OPENVR_DLL)
+    else:
+        log(f"ovrl: warning: {OPENVR_DLL} not found; VR output will be "
+            "unavailable until it is present. Pass --openvr <path> or "
+            "install SteamVR.")
 
 
 def cmd_exports(args: argparse.Namespace) -> int:
@@ -501,15 +537,74 @@ def cmd_login(args: argparse.Namespace) -> int:
 
 
 def cmd_library(args: argparse.Namespace) -> int:
-    apps = store.entitlements(store.load_token())
+    token = store.load_token()
+    apps = store.entitlements(token)
     if not apps:
         print("no owned apps returned")
         return 0
     width = max(len(a.id) for a in apps)
+    if args.check:
+        from . import library
+        library.refresh_library(token)
+        pc = 0
+        for a in apps:
+            info = library.classify(token, a.id)
+            label = {"pc": "PC", "quest": "Quest"}.get(info["kind"], "-")
+            pc += info["kind"] == "pc"
+            print(f"{a.id:<{width}}  {label:<5}  {a.name}", flush=True)
+        print(f"\n{len(apps)} apps, {pc} PC games. Install one with "
+              "`python3 -m ovrl install <id>`.")
+        return 0
     for a in apps:
         print(f"{a.id:<{width}}  {a.name}")
     print(f"\n{len(apps)} apps. Quest and Rift versions of a game have different "
-          "IDs; `ovrl versions <id>` shows a Rift app's builds.")
+          "IDs; `ovrl library --check` marks which are PC games.")
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from . import library
+    updates = {k: getattr(args, k) for k in library.CONFIG_KEYS
+               if getattr(args, k) is not None}
+    try:
+        cfg = library.save_config(updates) if updates else library.load_config()
+    except library.LibraryError as e:
+        sys.exit(f"ovrl: {e}")
+    for k in library.CONFIG_KEYS:
+        print(f"{k:<14} {cfg.get(k, '')}")
+    return 0
+
+
+def _library_call(fn, *a, **kw):
+    from . import library
+    try:
+        return fn(*a, **kw)
+    except library.LibraryError as e:
+        sys.exit(f"ovrl: {e}")
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    from . import library
+    game = _library_call(library.install, args.app_id)
+    print(f"\n{game['name']} installed in {game['dir']}")
+    return 0
+
+
+def cmd_add_queued(args: argparse.Namespace) -> int:
+    from . import library
+    _library_call(library.add_to_steam)
+    return 0
+
+
+def cmd_update_shims(args: argparse.Namespace) -> int:
+    from . import library
+    _library_call(library.update_shims)
+    return 0
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from . import gui
+    gui.serve(args.port, open_browser=not args.no_browser)
     return 0
 
 
@@ -624,7 +719,41 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_login)
 
     s = sub.add_parser("library", help="list apps your account owns")
+    s.add_argument("--check", action="store_true",
+                   help="also mark which apps are PC games (one store lookup each)")
     s.set_defaults(func=cmd_library)
+
+    s = sub.add_parser("setup", help="save settings used by install/gui "
+                                     "(no options: show them)")
+    s.add_argument("--real-runtime", metavar="LibOVRRT64_1.dll",
+                   help="genuine Meta-signed runtime for the signature check")
+    s.add_argument("--real-platform", metavar="LibOVRPlatform64_1.dll")
+    s.add_argument("--prefix", metavar="COMPATDATA",
+                   help="Proton prefix all games run in")
+    s.add_argument("--games-dir", help="where games are downloaded (default ~/Games)")
+    s.add_argument("--proton-tool", metavar="NAME", help="e.g. proton_11")
+    s.add_argument("--openvr", metavar="openvr_api.dll")
+    s.add_argument("--steam-root")
+    s.add_argument("--steam-user", metavar="ID")
+    s.set_defaults(func=cmd_setup)
+
+    s = sub.add_parser("install", help="download a PC game, stage it and add it "
+                                       "to Steam in one step")
+    s.add_argument("app_id")
+    s.set_defaults(func=cmd_install)
+
+    s = sub.add_parser("add-queued", help="add installed games not yet in Steam "
+                                          "(Steam closed)")
+    s.set_defaults(func=cmd_add_queued)
+
+    s = sub.add_parser("update-shims", help="copy the current build's shim into "
+                                            "every installed game")
+    s.set_defaults(func=cmd_update_shims)
+
+    s = sub.add_parser("gui", help="open the library UI in your browser")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true")
+    s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("versions", help="list a Rift app's builds")
     s.add_argument("app_id")

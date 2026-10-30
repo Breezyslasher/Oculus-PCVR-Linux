@@ -193,6 +193,50 @@ Start SteamVR, then launch the entry from your library. Steam wires up the VR
 bridge, Proton loads our shim through the injector, and the shim renders the
 game through SteamVR. Undo with `ovrl stubs restore "$(dirname "$GAME")"`.
 
+## Easy mode: library UI and one-step install
+
+Once you're logged in (`python3 -m ovrl login`, see above) and have built the
+DLLs (`make`), save your settings once:
+
+```sh
+cd launcher
+python3 -m ovrl setup --real-runtime /path/to/real/LibOVRRT64_1.dll --games-dir ~/Games
+```
+
+Then open the library page in your browser:
+
+```sh
+python3 -m ovrl gui
+```
+
+It lists the apps you own and checks each one's newest build, marking it **PC**
+(a Windows .exe), **Quest** (an Android APK) or **not a game**. Quest and Rift
+versions of a game have separate IDs, and only PC games get an Install button.
+Install downloads the game into `games_dir`, detects Unreal or Unity, stages
+the shim beside the exe and adds it to Steam with Proton forced. If Steam is
+running, the game is queued; quit Steam and press **Add queued games to
+Steam**. **Update shim in all games** copies the freshly built shim, injector
+and Platform stub into every installed game (Meta's genuine DLLs are left
+alone). **Browse…** opens your desktop's file dialog (zenity or kdialog).
+
+The page is served only on 127.0.0.1, and actions need a random per-run token
+embedded in the page.
+
+The same works from the terminal:
+
+```sh
+python3 -m ovrl library --check   # mark PC vs Quest
+python3 -m ovrl install <app-id>  # download, stage, add to Steam
+python3 -m ovrl add-queued        # after quitting Steam
+python3 -m ovrl update-shims      # after `git pull && make`
+```
+
+Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
+Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
+locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it
+access to your games folder:
+`flatpak override --user --filesystem=$HOME/Games com.valvesoftware.Steam`.
+
 ## Layout
 
 ```
