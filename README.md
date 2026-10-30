@@ -132,6 +132,7 @@ src/injector/   ovrinject.exe
 tests/          Windows-side smoke tests (run under Wine by `make check`)
 launcher/ovrl/  Python launcher CLI (store.py: Meta API, download.py: CDN downloader)
 launcher/tests/ launcher tests against a local fake store/CDN
+tools/          debugging helpers (minidump_info.py: summarize a crash dump)
 docs/           plan and research notes
 ```
 
