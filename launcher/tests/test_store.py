@@ -156,6 +156,11 @@ class StoreTest(unittest.TestCase):
         self.assertIsNotNone(store.token_problem("OC|123|abc"))
         self.assertIsNotNone(store.token_problem("FRL%7Cabc"))
 
+    def test_clean_token(self):
+        for raw in (TOKEN, f"  {TOKEN}\n", f"oc_ac_at: {TOKEN}", f"access_token={TOKEN}",
+                    f"authorization: OAuth {TOKEN}", f"Bearer {TOKEN}", f'"{TOKEN}"'):
+            self.assertEqual(store.clean_token(raw), TOKEN, raw)
+
     def test_login_saves_token_privately(self):
         rc, out = self.run_cli("login", "--token", TOKEN)
         self.assertEqual(rc, 0)

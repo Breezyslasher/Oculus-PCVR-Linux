@@ -40,6 +40,24 @@ def config_dir() -> Path:
     return Path(base) / "ovrl"
 
 
+def clean_token(raw: str) -> str:
+    """Strip what tends to come along when copying a token from dev tools:
+    a "name: value" or "name=value" label, an "OAuth"/"Bearer" scheme, quotes."""
+    def unwrap(t: str) -> str:
+        t = t.strip().strip('"\'').strip()
+        for scheme in ("oauth ", "bearer "):
+            if t.lower().startswith(scheme):
+                t = t[len(scheme):].strip()
+        return t
+
+    token = unwrap(raw)
+    for sep in (":", "="):
+        _, found, tail = token.partition(sep)
+        if found and unwrap(tail).startswith(("FRL", "OC")):
+            token = unwrap(tail)
+    return token
+
+
 def token_problem(token: str) -> str | None:
     """Return why a pasted token looks wrong, or None if it looks usable."""
     if "%" in token:

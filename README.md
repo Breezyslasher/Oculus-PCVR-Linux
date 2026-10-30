@@ -33,13 +33,29 @@ account's access token, the same way
 This has only been tested against a local fake of the store so far. If it
 fails against the real one, please open an issue with the error message.
 
-**1. Get your access token.** Log in at [meta.com](https://www.meta.com) or
-[oculus.com](https://www.oculus.com) in a desktop browser. Open the
-developer tools (F12), go to **Network**, filter for `graphql`, and click
-around the store until requests appear. Open one and look in its
-**Payload** (form data, not the URL) for `access_token`. Copy its value:
-it starts with `FRL` or `OC` and has no `|` in it. Treat it like a
-password. Anyone with it can act as your account, so don't share it.
+**1. Get your access token.** These steps follow
+[ComputerElite's token guides](https://github.com/ComputerElite/ComputerElite.github.io/tree/main/tools/Oculus).
+The token is a password for your account: anyone who has it can act as you,
+so never share it.
+
+*Without Windows (browser cookie, the guide's older method):*
+1. In Chrome or Firefox, open <https://developer.oculus.com/manage> and log in
+   with your Meta account. It may redirect to developers.meta.com; that's
+   fine. You don't need a developer account, only to be logged in.
+2. Press F12. In Chrome go to **Application → Cookies**; in Firefox go to
+   **Storage → Cookies**. Select the site you're on.
+3. Find the cookie named **`oc_ac_at`** and copy its **value** (it starts
+   with `FRL` or `OC`).
+
+Meta may no longer accept this kind of token for downloads; the downgrader
+switched to the method below. `ovrl login` checks the token right away, and
+`ovrl versions` / `ovrl download` will show whether it is accepted.
+
+*With the Oculus PC app on Windows (the guide's current method):* with the
+Oculus app open and logged in, press Ctrl+Shift+I. In **Network**, filter for
+`graph`, click the first request, and copy the `FRL…` token shown at the
+bottom of its **Headers** tab. The token keeps working on Linux after that,
+until it expires.
 
 **2. Log in and find the game.**
 

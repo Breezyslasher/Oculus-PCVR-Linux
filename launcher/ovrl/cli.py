@@ -145,7 +145,7 @@ def cmd_exports(args: argparse.Namespace) -> int:
 
 def cmd_login(args: argparse.Namespace) -> int:
     token = args.token or getpass.getpass("Meta access token (input hidden): ")
-    token = token.strip()
+    token = store.clean_token(token)
     problem = store.token_problem(token)
     if problem:
         sys.exit(f"ovrl: that doesn't look like a user token: {problem}")
