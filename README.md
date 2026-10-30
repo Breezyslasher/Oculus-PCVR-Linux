@@ -128,6 +128,17 @@ a new game doesn't reach its menu.
 
 ## See it in the headset (Milestone 3: launch through Steam)
 
+**Status:** *The Eastern Edge* (Unity 2017.4, Oculus SDK 1.37) is playable this
+way: it renders in the headset with head tracking and Touch-style controller
+input, on Linux Mint with Proton 10 and a Quest 3 via SteamVR.
+*Spider-Man: Homecoming VR* (Unreal 4.14, SDK 1.8) gets a VR session and
+submits frames, but renders black (even flat with `-nohmd`), so that one is
+blocked on the game itself rather than the shim.
+
+Use the same Proton version that created the prefix. In the tests, Proton 9
+failed the game's signature check in a prefix made by Proton 10.
+`add-to-steam --prefix` now picks the matching version when Steam has it.
+
 `ovrl launch` runs the game under a bare `proton run`, which is enough to
 reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
 runtime environment that points it at the native Linux SteamVR server — so

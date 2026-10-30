@@ -1061,10 +1061,12 @@ EXPORT ovrResult ovr_GetInputState(ovrSession session, int controllerType,
     memcpy(out, &st, n);
     /* Games poll each controller type separately, so log changes per type
      * (Touch, LTouch, RTouch, or any other request). */
-    static unsigned last[4][2] = {{~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u}};
+    static unsigned last[5][2] = {{~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u},
+                                  {~0u, ~0u}};
     int slot = controllerType == ovrControllerType_LTouch ? 1
              : controllerType == ovrControllerType_RTouch ? 2
-             : controllerType == ovrControllerType_Touch ? 0 : 3;
+             : controllerType == ovrControllerType_Touch ? 0
+             : controllerType == -1 /* ovrControllerType_Active */ ? 3 : 4;
     if (st.Buttons != last[slot][0] || st.Touches != last[slot][1]) {
         LOG("input(request 0x%x): controllers 0x%x buttons 0x%x touches 0x%x",
             (unsigned)controllerType, st.ControllerType, st.Buttons, st.Touches);
