@@ -621,6 +621,9 @@ EXPORT ovrResult ovr_GetTextureSwapChainCurrentIndex(ovrSession session,
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
     *out = swapchain_d3d_current_index(chain);
+    static LONG n;
+    if (InterlockedIncrement(&n) <= 6)
+        LOG("GetTextureSwapChainCurrentIndex(%p) -> %d", (void *)chain, *out);
     return ovrSuccess;
 }
 
@@ -652,6 +655,7 @@ EXPORT ovrResult ovr_GetTextureSwapChainBufferDX(ovrSession session,
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
     void *buf = swapchain_d3d_buffer(chain, index, iid);
+    LOG("GetTextureSwapChainBufferDX(%p, %d) -> %p", (void *)chain, index, buf);
     if (!buf)
         return set_error(ovrError_InvalidParameter, "bad swap chain buffer");
     *out = buf;
@@ -665,6 +669,10 @@ EXPORT ovrResult ovr_CommitTextureSwapChain(ovrSession session, ovrTextureSwapCh
     if (!chain)
         return set_error(ovrError_InvalidParameter, "null chain");
     swapchain_d3d_commit(chain);
+    static LONG n;
+    if (InterlockedIncrement(&n) <= 6)
+        LOG("CommitTextureSwapChain(%p) -> next index %d", (void *)chain,
+            swapchain_d3d_current_index(chain));
     return ovrSuccess;
 }
 
@@ -773,8 +781,28 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
     LONG f = InterlockedIncrement(&frames_);
     if (f <= 3 || f % 900 == 0)
         LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
-    if (f == 1 || f == 90 || f % 900 == 0)
+    if (f == 1 || f == 90 || f % 900 == 0) {
         vr_backend_log_compositor_state(f);
+        for (unsigned i = 0; i < count; i++) {
+            const ovrLayerHeader *h = layers ? layers[i] : NULL;
+            if (!h || h->Type != ovrLayerType_EyeFov)
+                continue;
+            const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
+            LOG("frame %ld: layer %u flags 0x%x chains %p/%p viewports "
+                "L(%d,%d %dx%d) R(%d,%d %dx%d) renderpose L q(%.2f %.2f %.2f %.2f) "
+                "p(%.2f %.2f %.2f)", f, i, h->Flags, (void *)l->ColorTexture[0],
+                (void *)l->ColorTexture[1], l->Viewport[0].Pos.x, l->Viewport[0].Pos.y,
+                l->Viewport[0].Size.w, l->Viewport[0].Size.h, l->Viewport[1].Pos.x,
+                l->Viewport[1].Pos.y, l->Viewport[1].Size.w, l->Viewport[1].Size.h,
+                l->RenderPose[0].Orientation.x, l->RenderPose[0].Orientation.y,
+                l->RenderPose[0].Orientation.z, l->RenderPose[0].Orientation.w,
+                l->RenderPose[0].Position.x, l->RenderPose[0].Position.y,
+                l->RenderPose[0].Position.z);
+            swapchain_d3d_probe(l->ColorTexture[0], f);
+            if (l->ColorTexture[1] && l->ColorTexture[1] != l->ColorTexture[0])
+                swapchain_d3d_probe(l->ColorTexture[1], f);
+        }
+    }
     return submitted ? ovrSuccess
         : set_error(ovrSuccess_NotVisible, "no eye layer submitted");
 }

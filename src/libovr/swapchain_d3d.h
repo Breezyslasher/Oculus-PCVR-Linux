@@ -34,5 +34,9 @@ void swapchain_d3d_size(ovrTextureSwapChain chain, int *width, int *height);
  * to a solid color, so whether it shows in the headset separates "submission
  * is broken" from "the game's rendering doesn't reach our texture". */
 void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye);
+/* Debug aid: log a pixel from the middle of each eye's half of every buffer
+ * in the chain (marking the one we submit), to tell "the game draws into a
+ * different buffer" from "the game draws nothing". */
+void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame);
 
 #endif

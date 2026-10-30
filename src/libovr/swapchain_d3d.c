@@ -223,6 +223,59 @@ void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
     ID3D11Device_Release(dev);
 }
 
+static unsigned read_pixel(ID3D11Device *dev, ID3D11DeviceContext *ctx,
+                           ID3D11Texture2D *src, DXGI_FORMAT fmt, int x, int y)
+{
+    D3D11_TEXTURE2D_DESC sd;
+    memset(&sd, 0, sizeof(sd));
+    sd.Width = sd.Height = 1;
+    sd.MipLevels = sd.ArraySize = 1;
+    sd.Format = fmt;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *staging = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(dev, &sd, NULL, &staging)))
+        return 0xdeadbeef;
+    D3D11_BOX box = {(UINT)x, (UINT)y, 0, (UINT)x + 1, (UINT)y + 1, 1};
+    ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)staging, 0, 0, 0, 0,
+                                              (ID3D11Resource *)src, 0, &box);
+    unsigned v = 0xdeadbeef;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0,
+                                          D3D11_MAP_READ, 0, &m))) {
+        v = *(const unsigned *)m.pData;
+        ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    }
+    ID3D11Texture2D_Release(staging);
+    return v;
+}
+
+void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c || !c->textures[0])
+        return;
+    ID3D11Device *dev = NULL;
+    ID3D11Texture2D_GetDevice(c->textures[0], &dev);
+    if (!dev)
+        return;
+    ID3D11DeviceContext *ctx = NULL;
+    ID3D11Device_GetImmediateContext(dev, &ctx);
+    if (ctx) {
+        for (int i = 0; i < c->length; i++) {
+            unsigned l = read_pixel(dev, ctx, c->textures[i], c->format,
+                                    c->width / 4, c->height / 2);
+            unsigned r = read_pixel(dev, ctx, c->textures[i], c->format,
+                                    c->width * 3 / 4, c->height / 2);
+            LOG("frame %ld: chain %p buffer %d%s center pixels L=%08x R=%08x",
+                frame, (void *)c, i, i == c->committed ? " (submitted)" : "", l, r);
+        }
+        ID3D11DeviceContext_Release(ctx);
+    }
+    ID3D11Device_Release(dev);
+}
+
 void swapchain_d3d_size(ovrTextureSwapChain chain, int *width, int *height)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
