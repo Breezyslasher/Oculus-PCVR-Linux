@@ -19,6 +19,7 @@
 #include "iat_hook.h"
 #include "ovr_types.h"
 #include "sigcheck.h"
+#include "swapchain_d3d.h"
 #include "vr_backend.h"
 
 /* The one opaque session object. OpenVR is a process-wide singleton, so a
@@ -285,27 +286,234 @@ NO_SESSION(ovr_GetBoundaryGeometry)
 NO_SESSION(ovr_GetBoundaryDimensions)
 NO_SESSION(ovr_GetBoundaryVisible)
 NO_SESSION(ovr_RequestBoundaryVisible)
-NO_SESSION(ovr_GetTextureSwapChainLength)
-NO_SESSION(ovr_GetTextureSwapChainCurrentIndex)
-NO_SESSION(ovr_GetTextureSwapChainDesc)
-NO_SESSION(ovr_CommitTextureSwapChain)
-NO_SESSION(ovr_CreateTextureSwapChainDX)
-NO_SESSION(ovr_GetTextureSwapChainBufferDX)
-NO_SESSION(ovr_CreateMirrorTextureDX)
-NO_SESSION(ovr_CreateMirrorTextureWithOptionsDX)
-NO_SESSION(ovr_GetMirrorTextureBufferDX)
 NO_SESSION(ovr_CreateTextureSwapChainGL)
 NO_SESSION(ovr_GetTextureSwapChainBufferGL)
 NO_SESSION(ovr_CreateMirrorTextureGL)
 NO_SESSION(ovr_CreateMirrorTextureWithOptionsGL)
 NO_SESSION(ovr_GetMirrorTextureBufferGL)
-NO_SESSION(ovr_WaitToBeginFrame)
-NO_SESSION(ovr_BeginFrame)
-NO_SESSION(ovr_EndFrame)
-NO_SESSION(ovr_SubmitFrame)
-NO_SESSION(ovr_SubmitFrame2)
 NO_SESSION(ovr_GetPerfStats)
 NO_SESSION(ovr_ResetPerfStats)
+
+/* ---- D3D11 texture swap chains, mirror, and frame submission (3b) ------- */
+
+EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevice,
+                                              const ovrTextureSwapChainDesc *desc,
+                                              ovrTextureSwapChain *out)
+{
+    if (out)
+        *out = NULL;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    if (!d3dDevice || !desc || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    ovrTextureSwapChain c = swapchain_d3d_create(d3dDevice, desc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "swap chain creation failed");
+    *out = c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainLength(ovrSession session,
+                                               ovrTextureSwapChain chain, int *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    *out = swapchain_d3d_length(chain);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainCurrentIndex(ovrSession session,
+                                                     ovrTextureSwapChain chain, int *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    *out = swapchain_d3d_current_index(chain);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainDesc(ovrSession session,
+                                             ovrTextureSwapChain chain,
+                                             ovrTextureSwapChainDesc *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    int w, h;
+    swapchain_d3d_size(chain, &w, &h);
+    memset(out, 0, sizeof(*out));
+    out->Width = w;
+    out->Height = h;
+    out->ArraySize = 1;
+    out->MipLevels = 1;
+    out->SampleCount = 1;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainBufferDX(ovrSession session,
+                                                 ovrTextureSwapChain chain, int index,
+                                                 const void *iid, void **out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    void *buf = swapchain_d3d_buffer(chain, index, iid);
+    if (!buf)
+        return set_error(ovrError_InvalidParameter, "bad swap chain buffer");
+    *out = buf;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_CommitTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
+{
+    (void)session;
+    if (!chain)
+        return set_error(ovrError_InvalidParameter, "null chain");
+    swapchain_d3d_commit(chain);
+    return ovrSuccess;
+}
+
+EXPORT void ovr_DestroyTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
+{
+    (void)session;
+    swapchain_d3d_destroy(chain);
+}
+
+/* Mirror textures (the desktop preview) are optional for VR output; create a
+ * plain texture so the game's calls succeed, but nothing is drawn into it. */
+EXPORT ovrResult ovr_CreateMirrorTextureDX(ovrSession session, void *d3dDevice,
+                                           const ovrMirrorTextureDesc *desc,
+                                           ovrMirrorTexture *out)
+{
+    if (out)
+        *out = NULL;
+    if (session != &g_hmd || !d3dDevice || !desc || !out)
+        return set_error(ovrError_InvalidParameter, "mirror: bad arg");
+    ovrTextureSwapChainDesc sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.Format = desc->Format;
+    sc.Width = desc->Width;
+    sc.Height = desc->Height;
+    sc.ArraySize = 1;
+    sc.MipLevels = 1;
+    sc.SampleCount = 1;
+    sc.BindFlags = ovrTextureBind_DX_RenderTarget;
+    sc.StaticImage = ovrTrue;
+    ovrTextureSwapChain c = swapchain_d3d_create(d3dDevice, &sc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "mirror creation failed");
+    *out = (ovrMirrorTexture)c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_CreateMirrorTextureWithOptionsDX(ovrSession session, void *d3dDevice,
+                                                      const ovrMirrorTextureDesc *desc,
+                                                      ovrMirrorTexture *out)
+{
+    return ovr_CreateMirrorTextureDX(session, d3dDevice, desc, out);
+}
+
+EXPORT ovrResult ovr_GetMirrorTextureBufferDX(ovrSession session, ovrMirrorTexture mirror,
+                                              const void *iid, void **out)
+{
+    (void)session;
+    if (!mirror || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    void *buf = swapchain_d3d_buffer((ovrTextureSwapChain)mirror, 0, iid);
+    if (!buf)
+        return set_error(ovrError_InvalidParameter, "bad mirror buffer");
+    *out = buf;
+    return ovrSuccess;
+}
+
+/* Submit one frame's layers to the compositor and present. We handle the
+ * EyeFov layer (what head-mounted rendering uses); others are ignored. The
+ * caller has already blocked for render poses (via begin_frame). */
+static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
+{
+    int submitted = 0;
+    for (unsigned i = 0; i < count; i++) {
+        const ovrLayerHeader *h = layers ? layers[i] : NULL;
+        if (!h || h->Type != ovrLayerType_EyeFov)
+            continue;
+        const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
+        for (int eye = 0; eye < ovrEye_Count; eye++) {
+            ovrTextureSwapChain chain = l->ColorTexture[eye]
+                ? l->ColorTexture[eye] : l->ColorTexture[0];
+            if (!chain)
+                continue;
+            void *tex = swapchain_d3d_submit_texture(chain);
+            int w, h2;
+            swapchain_d3d_size(chain, &w, &h2);
+            /* Normalize the eye's viewport into texture UV bounds. */
+            ovrRecti vp = l->Viewport[eye];
+            float uMin = w ? (float)vp.Pos.x / w : 0.0f;
+            float vMin = h2 ? (float)vp.Pos.y / h2 : 0.0f;
+            float uMax = w ? (float)(vp.Pos.x + vp.Size.w) / w : 1.0f;
+            float vMax = h2 ? (float)(vp.Pos.y + vp.Size.h) / h2 : 1.0f;
+            if (vp.Size.w == 0 || vp.Size.h == 0) {
+                uMin = vMin = 0.0f;
+                uMax = vMax = 1.0f;
+            }
+            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax))
+                submitted++;
+        }
+    }
+    vr_backend_present();
+    return submitted ? ovrSuccess
+        : set_error(ovrSuccess_NotVisible, "no eye layer submitted");
+}
+
+EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
+                                 const ovrViewScaleDesc *viewScaleDesc,
+                                 const ovrLayerHeader *const *layerPtrList,
+                                 unsigned layerCount)
+{
+    (void)frameIndex; (void)viewScaleDesc;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    /* Old single-call frame model: block for poses, submit, present. */
+    vr_backend_begin_frame();
+    return submit_layers(layerPtrList, layerCount);
+}
+
+EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
+                                  const ovrViewScaleDesc *viewScaleDesc,
+                                  const ovrLayerHeader *const *layerPtrList,
+                                  unsigned layerCount)
+{
+    return ovr_SubmitFrame(session, frameIndex, viewScaleDesc, layerPtrList, layerCount);
+}
+
+EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
+{
+    (void)frameIndex;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    return vr_backend_begin_frame() ? ovrSuccess
+        : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
+}
+
+EXPORT ovrResult ovr_BeginFrame(ovrSession session, long long frameIndex)
+{
+    (void)frameIndex;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
+                              const ovrViewScaleDesc *viewScaleDesc,
+                              const ovrLayerHeader *const *layerPtrList,
+                              unsigned layerCount)
+{
+    (void)frameIndex; (void)viewScaleDesc;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
+    return submit_layers(layerPtrList, layerCount);
+}
 
 EXPORT int ovr_GetTrackingOriginType(ovrSession session)
 {
@@ -324,14 +532,10 @@ EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
     return 0;
 }
 
-EXPORT void ovr_DestroyTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
-{
-    (void)session; (void)chain;
-}
-
 EXPORT void ovr_DestroyMirrorTexture(ovrSession session, ovrMirrorTexture tex)
 {
-    (void)session; (void)tex;
+    (void)session;
+    swapchain_d3d_destroy((ovrTextureSwapChain)tex);
 }
 
 /* ---- Timing ------------------------------------------------------------ */

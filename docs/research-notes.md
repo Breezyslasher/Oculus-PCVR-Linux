@@ -148,6 +148,27 @@ store.**
 - The original Milestone 1 idea, `ovr-platform-util`, isn't needed for this
   path. It stays a fallback if the CDN route stops working.
 
+## Rendering backend (Milestone 3)
+
+Implemented in `src/libovr/vr_backend.c` (OpenVR wrapper) and
+`swapchain_d3d.c` (D3D11 swap chains); wired through `libovr_stub.c`.
+
+- Uses OpenVR's C "FnTable" API via `third_party/openvr/openvr_capi.h` (BSD).
+  `openvr_api.dll` is loaded at runtime from the prefix (SteamVR / Proton's
+  bridge provides it); absent => fall back to the no-HMD path.
+- `ovr_Create` -> `VR_InitInternal(Scene)` + IVRSystem_026 / IVRCompositor_029.
+- Head/eye poses: OpenVR 3x4 row-major rigid transforms -> `ovrPosef`
+  (both APIs are right-handed, Y-up, -Z-forward, so no axis flip). FOV from
+  `GetProjectionRaw`, render size from `GetRecommendedRenderTargetSize`.
+- Swap chains are real `ID3D11Texture2D` rings on the game's device, created
+  `D3D11_RESOURCE_MISC_SHARED` so SteamVR's out-of-process compositor can
+  read them (retried without SHARED if a format rejects it). `ovr_SubmitFrame`
+  blocks on `WaitGetPoses`, then `Submit`s each eye's committed texture with
+  UV bounds derived from the layer viewport, then `PostPresentHandoff`.
+- **Untested on hardware.** The D3D11->Vulkan path under DXVK and the
+  shared-texture submit to SteamVR's compositor are the parts most likely to
+  need iteration. GL/Vulkan swap chains are not implemented yet (D3D11 only).
+
 ## LibOVR ABI
 
 - Struct layouts in `src/libovr/ovr_types.h` were cross-checked against the

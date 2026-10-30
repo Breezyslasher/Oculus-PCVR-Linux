@@ -39,4 +39,17 @@ ovrPoseStatef vr_backend_head_pose(void);
 /* True while a hand controller of the given OpenVR class is connected. */
 bool vr_backend_hmd_present(void);
 
+/* ---- Frame submission (Milestone 3b) ------------------------------------
+ * A frame is: begin (block for the compositor's render poses), render, then
+ * submit each eye's committed D3D11 texture, then present. */
+bool vr_backend_begin_frame(void);
+
+/* Submit one eye. `d3d11_texture` is an ID3D11Texture2D*; the sub-rectangle
+ * [uMin,vMin]-[uMax,vMax] selects this eye's region (0,0,1,1 for a whole
+ * per-eye texture). Returns false on compositor error. */
+bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
+                           float uMin, float vMin, float uMax, float vMax);
+
+void vr_backend_present(void);
+
 #endif

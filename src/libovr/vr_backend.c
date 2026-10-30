@@ -219,3 +219,39 @@ ovrPoseStatef vr_backend_head_pose(void)
     }
     return s;
 }
+
+bool vr_backend_begin_frame(void)
+{
+    if (!g_active)
+        return false;
+    /* Block until the compositor hands us this frame's render poses. We don't
+     * use the returned poses directly yet (the game queried them via
+     * ovr_GetTrackingState); the call also paces rendering to the display. */
+    TrackedDevicePose_t render[k_unMaxTrackedDeviceCount];
+    EVRCompositorError e = g_compositor->WaitGetPoses(render, k_unMaxTrackedDeviceCount,
+                                                      NULL, 0);
+    return e == EVRCompositorError_VRCompositorError_None;
+}
+
+bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
+                           float uMin, float vMin, float uMax, float vMax)
+{
+    if (!g_active || !d3d11_texture)
+        return false;
+    struct Texture_t tex;
+    tex.handle = d3d11_texture;
+    tex.eType = ETextureType_TextureType_DirectX;
+    tex.eColorSpace = EColorSpace_ColorSpace_Auto;
+    struct VRTextureBounds_t bounds = {uMin, vMin, uMax, vMax};
+    EVRCompositorError e = g_compositor->Submit((EVREye)eye, &tex, &bounds,
+                                                EVRSubmitFlags_Submit_Default);
+    if (e != EVRCompositorError_VRCompositorError_None)
+        LOG("compositor Submit(eye %d) failed: %d", (int)eye, (int)e);
+    return e == EVRCompositorError_VRCompositorError_None;
+}
+
+void vr_backend_present(void)
+{
+    if (g_active)
+        g_compositor->PostPresentHandoff();
+}

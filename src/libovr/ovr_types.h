@@ -27,11 +27,14 @@ typedef struct ovrMirrorTextureData *ovrMirrorTexture;
 
 enum {
     ovrSuccess = 0,
+    ovrSuccess_NotVisible = 1000,
+    ovrError_MemoryAllocationFailure = -1000,
     ovrError_InvalidSession = -1002,
     ovrError_NotInitialized = -1004,
     ovrError_InvalidParameter = -1005,
     ovrError_NoHmd = -1007,
     ovrError_Unsupported = -1009,
+    ovrError_RuntimeException = -1016,
     ovrError_Initialize = -3000,
 };
 
@@ -154,6 +157,81 @@ typedef struct {
     int SubmitMaxSamples;
     int SubmitOptimalSamples;
 } ovrTouchHapticsDesc;
+
+/* ---- Texture swap chains, layers and submission (Milestone 3b) ---------- */
+
+typedef int ovrTextureType;   /* ovrTexture_2D = 0 is all we handle */
+typedef int ovrTextureFormat;
+enum {
+    OVR_FORMAT_UNKNOWN = 0,
+    OVR_FORMAT_R8G8B8A8_UNORM = 4,
+    OVR_FORMAT_R8G8B8A8_UNORM_SRGB = 5,
+    OVR_FORMAT_B8G8R8A8_UNORM = 6,
+    OVR_FORMAT_B8G8R8A8_UNORM_SRGB = 7,
+    OVR_FORMAT_B8G8R8X8_UNORM = 8,
+    OVR_FORMAT_B8G8R8X8_UNORM_SRGB = 9,
+    OVR_FORMAT_R16G16B16A16_FLOAT = 10,
+};
+
+enum {
+    ovrTextureBind_DX_RenderTarget = 0x0001,
+    ovrTextureBind_DX_UnorderedAccess = 0x0002,
+    ovrTextureBind_DX_DepthStencil = 0x0004,
+};
+enum {
+    ovrTextureMisc_DX_Typeless = 0x0001,
+    ovrTextureMisc_AllowGenerateMips = 0x0002,
+};
+
+typedef struct {
+    ovrTextureType Type;
+    ovrTextureFormat Format;
+    int ArraySize;
+    int Width;
+    int Height;
+    int MipLevels;
+    int SampleCount;
+    ovrBool StaticImage;
+    unsigned MiscFlags;
+    unsigned BindFlags;
+} ovrTextureSwapChainDesc;
+
+typedef struct {
+    ovrTextureFormat Format;
+    int Width;
+    int Height;
+    unsigned MiscFlags;
+    unsigned MirrorOptions;
+} ovrMirrorTextureDesc;
+
+typedef enum {
+    ovrLayerType_Disabled = 0,
+    ovrLayerType_EyeFov = 1,
+    ovrLayerType_Quad = 3,
+    ovrLayerType_EyeMatrix = 5,
+} ovrLayerType;
+
+typedef struct {
+    ovrLayerType Type;
+    unsigned Flags;
+} ovrLayerHeader;
+
+typedef struct {
+    ovrLayerHeader Header;
+    ovrTextureSwapChain ColorTexture[ovrEye_Count];
+    ovrRecti Viewport[ovrEye_Count];
+    ovrFovPort Fov[ovrEye_Count];
+    ovrPosef RenderPose[ovrEye_Count];
+    double SensorSampleTime;
+} ovrLayerEyeFov;
+
+typedef struct {
+    ovrVector3f HmdToEyeOffset[ovrEye_Count];
+    float HmdSpaceToWorldScaleInMeters;
+} ovrViewScaleDesc;
+
+static_assert(sizeof(ovrTextureSwapChainDesc) == 40, "ovrTextureSwapChainDesc");
+static_assert(sizeof(ovrLayerEyeFov) == 152, "ovrLayerEyeFov");
 
 typedef struct {
     ovrBool IsOculusServiceRunning;

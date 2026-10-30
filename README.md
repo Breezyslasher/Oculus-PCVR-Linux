@@ -5,13 +5,14 @@ without the Oculus PC app. See [docs/PLAN.md](docs/PLAN.md) for the full plan
 and [docs/research-notes.md](docs/research-notes.md) for what has been
 confirmed so far.
 
-**Status: early.** The Milestone 2 pieces build and pass smoke tests under
-Wine. They have not been tried on a real game yet.
+**Status: early, in active bring-up.** Milestones 1-2 work on real games
+(download, injection, stubs, signature handling). Milestone 3 (OpenVR-backed
+rendering to the headset) is newly implemented and untested on hardware.
 
 | Piece | Path | State |
 |-------|------|-------|
 | Platform SDK stub (`LibOVRPlatform64_1.dll`) | `src/platform` | Init, entitlement (always passes), logged-in user, message queue. Message type IDs unverified. |
-| LibOVR shim (`LibOVRRT64_1.dll`) | `src/libovr` | "Runtime present, no HMD": `ovr_Create` returns `ovrError_NoHmd`. Redirects the game's runtime load to itself. |
+| LibOVR shim (`LibOVRRT64_1.dll`) | `src/libovr` | Bridges LibOVR to OpenVR (SteamVR): session, HMD description, tracking, D3D11 swap chains and frame submission. Falls back to "no HMD" when SteamVR is absent. Redirects the game's runtime load; answers the signature check. |
 | Injector (`ovrinject.exe`) | `src/injector` | Starts the game suspended and loads the shim before game code runs. |
 | Launcher (`ovrl`) | `launcher/` | Store login, owned-app list, build list and resumable Rift downloads (untested against the live store). Stub install/restore, prefix setup, launch, DLL export diff. |
 

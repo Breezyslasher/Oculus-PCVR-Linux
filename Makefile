@@ -26,7 +26,7 @@ $(PLATFORM_DLL): src/platform/ovr_platform_stub.c src/platform/platform_types.h 
 	$(CC) $(CFLAGS) -shared -o $@ src/platform/ovr_platform_stub.c $(COMMON) $(LDFLAGS)
 
 LIBOVR_SRC := src/libovr/libovr_stub.c src/libovr/iat_hook.c src/libovr/sigcheck.c \
-              src/libovr/vr_backend.c
+              src/libovr/vr_backend.c src/libovr/swapchain_d3d.c
 LIBOVR_INC := -Ithird_party/openvr
 
 $(LIBOVR_DLL): $(LIBOVR_SRC) src/libovr/*.h $(COMMON) | $(BUILD)
