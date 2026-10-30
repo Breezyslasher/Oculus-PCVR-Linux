@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <dxgi.h>
 #include <mmdeviceapi.h>
 #include <mmsystem.h>
 
@@ -165,6 +166,42 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     return desc;
 }
 
+/* The LUID of the GPU the headset is on. Games compare it with the adapter
+ * they render with (UE4 destroys the session and retries every frame on a
+ * mismatch), so it must be a real adapter's LUID, not zeros. We take the
+ * adapter SteamVR reports, falling back to the primary one. */
+static const GUID kIidIDXGIFactory1 =
+    {0x770aae78, 0xf26f, 0x4dba, {0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}};
+
+static void hmd_adapter_luid(ovrGraphicsLuid *out)
+{
+    memset(out, 0, sizeof(*out));
+    IDXGIFactory1 *factory = NULL;
+    if (FAILED(CreateDXGIFactory1(&kIidIDXGIFactory1, (void **)&factory)))
+        return;
+    int index = vr_backend_dxgi_adapter_index();
+    IDXGIAdapter1 *adapter = NULL;
+    if (index < 0 ||
+        FAILED(factory->lpVtbl->EnumAdapters1(factory, (UINT)index, &adapter))) {
+        index = 0;
+        adapter = NULL;
+        factory->lpVtbl->EnumAdapters1(factory, 0, &adapter);
+    }
+    if (adapter) {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->lpVtbl->GetDesc1(adapter, &desc))) {
+            memcpy(out->Reserved, &desc.AdapterLuid, sizeof(out->Reserved));
+            static LONG logged;
+            if (!InterlockedExchange(&logged, 1))
+                LOG("HMD adapter %d: \"%ls\" LUID %08lx:%08lx", index,
+                    desc.Description, (unsigned long)desc.AdapterLuid.HighPart,
+                    (unsigned long)desc.AdapterLuid.LowPart);
+        }
+        adapter->lpVtbl->Release(adapter);
+    }
+    factory->lpVtbl->Release(factory);
+}
+
 EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 {
     TRACE_FIRST();
@@ -178,6 +215,8 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
         LOG("ovr_Create -> ovrError_NoHmd (no SteamVR backend)");
         return set_error(ovrError_NoHmd, "No HMD / SteamVR not available");
     }
+    if (luid)
+        hmd_adapter_luid(luid);
     g_hmd.active = 1;
     if (session)
         *session = &g_hmd;

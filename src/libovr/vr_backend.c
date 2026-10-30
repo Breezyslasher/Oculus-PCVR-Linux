@@ -141,6 +141,14 @@ bool vr_backend_hmd_present(void)
     return p_IsHmdPresent ? p_IsHmdPresent() : false;
 }
 
+int vr_backend_dxgi_adapter_index(void)
+{
+    int32_t index = -1;
+    if (g_active && g_system && g_system->GetDXGIOutputInfo)
+        g_system->GetDXGIOutputInfo(&index);
+    return index;
+}
+
 void vr_backend_render_target_size(int *width, int *height)
 {
     uint32_t w = 0, h = 0;

@@ -38,6 +38,8 @@ ovrPoseStatef vr_backend_head_pose(void);
 
 /* True while a hand controller of the given OpenVR class is connected. */
 bool vr_backend_hmd_present(void);
+/* DXGI adapter index SteamVR renders to, or -1 if it doesn't say. */
+int vr_backend_dxgi_adapter_index(void);
 
 /* ---- Frame submission (Milestone 3b) ------------------------------------
  * A frame is: begin (block for the compositor's render poses), render, then

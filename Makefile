@@ -30,7 +30,7 @@ LIBOVR_SRC := src/libovr/libovr_stub.c src/libovr/iat_hook.c src/libovr/sigcheck
 LIBOVR_INC := -Ithird_party/openvr
 
 $(LIBOVR_DLL): $(LIBOVR_SRC) src/libovr/*.h $(COMMON) | $(BUILD)
-	$(CC) $(CFLAGS) $(LIBOVR_INC) -shared -o $@ $(LIBOVR_SRC) $(COMMON) $(LDFLAGS) -lwintrust -lcrypt32 -lole32 -lwinmm
+	$(CC) $(CFLAGS) $(LIBOVR_INC) -shared -o $@ $(LIBOVR_SRC) $(COMMON) $(LDFLAGS) -lwintrust -lcrypt32 -lole32 -lwinmm -ldxgi
 
 $(INJECTOR): src/injector/ovrinject.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lshell32
