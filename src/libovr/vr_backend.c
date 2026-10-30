@@ -257,6 +257,51 @@ ovrPoseStatef vr_backend_head_pose(void)
     return s;
 }
 
+static void fill_pose_state(ovrPoseStatef *s, const TrackedDevicePose_t *p)
+{
+    s->ThePose = pose_from_matrix(&p->mDeviceToAbsoluteTracking);
+    s->AngularVelocity.x = p->vAngularVelocity.v[0];
+    s->AngularVelocity.y = p->vAngularVelocity.v[1];
+    s->AngularVelocity.z = p->vAngularVelocity.v[2];
+    s->LinearVelocity.x = p->vVelocity.v[0];
+    s->LinearVelocity.y = p->vVelocity.v[1];
+    s->LinearVelocity.z = p->vVelocity.v[2];
+}
+
+bool vr_backend_controller(int hand, struct vr_controller *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->pose.ThePose.Orientation.w = 1.0f;
+    if (!g_active)
+        return false;
+    TrackedDeviceIndex_t idx = g_system->GetTrackedDeviceIndexForControllerRole(
+        hand ? ETrackedControllerRole_TrackedControllerRole_RightHand
+             : ETrackedControllerRole_TrackedControllerRole_LeftHand);
+    if (idx == k_unTrackedDeviceIndexInvalid || idx >= k_unMaxTrackedDeviceCount)
+        return false;
+    VRControllerState_t st;
+    memset(&st, 0, sizeof(st));
+    if (!g_system->GetControllerState(idx, &st, sizeof(st)))
+        return false;
+    out->connected = 1;
+    out->pressed = st.ulButtonPressed;
+    out->touched = st.ulButtonTouched;
+    for (int i = 0; i < 5; i++) {
+        out->axis[i][0] = st.rAxis[i].x;
+        out->axis[i][1] = st.rAxis[i].y;
+    }
+    TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
+    memset(poses, 0, sizeof(poses));
+    g_system->GetDeviceToAbsoluteTrackingPose(
+        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        k_unMaxTrackedDeviceCount);
+    if (poses[idx].bPoseIsValid) {
+        fill_pose_state(&out->pose, &poses[idx]);
+        out->pose_valid = 1;
+    }
+    return true;
+}
+
 bool vr_backend_begin_frame(void)
 {
     if (!g_active)

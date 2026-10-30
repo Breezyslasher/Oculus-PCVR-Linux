@@ -11,6 +11,8 @@
  * resolve its full symbol table; since no session is ever created they just
  * fail with ovrError_InvalidSession or return zeroed structs.
  */
+#include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -50,6 +52,7 @@ EXPORT const char ovrstub_build_marker[] = "OVRSTUB-BUILD-MARKER-v1";
 static ovrErrorInfo g_last_error;
 static HANDLE g_hmd_event;
 static int g_initialized;
+static unsigned g_minor;  /* SDK minor version the game was built against */
 static LARGE_INTEGER g_qpc_freq;
 
 static ovrResult set_error(ovrResult r, const char *msg)
@@ -89,6 +92,7 @@ EXPORT ovrResult ovr_Initialize(const ovrInitParams *params)
     TRACE_FIRST();
     LOG("ovr_Initialize(flags=0x%x, minor=%u)", params ? params->Flags : 0,
         params ? params->RequestedMinorVersion : 0);
+    g_minor = params ? params->RequestedMinorVersion : 0;
     g_initialized = 1;
     return ovrSuccess;
 }
@@ -248,6 +252,16 @@ EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *stat
     status->IsVisible = ovrTrue;
     status->HmdPresent = ovrTrue;
     status->HmdMounted = ovrTrue;
+    /* Later SDKs append HasInputFocus and OverlayPresent (1.21+) and
+     * DepthRequested (1.38+). Without input focus a game pauses input, so
+     * set it, but only write fields the caller's struct has. */
+    ovrBool *extra = (ovrBool *)status + 6;
+    if (g_minor >= 21) {
+        extra[0] = ovrTrue;   /* HasInputFocus */
+        extra[1] = ovrFalse;  /* OverlayPresent */
+    }
+    if (g_minor >= 38)
+        extra[2] = ovrFalse;  /* DepthRequested */
     return ovrSuccess;
 }
 
@@ -288,6 +302,14 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
     if (session_live(session)) {
         s.HeadPose = vr_backend_head_pose();
         s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
+        for (int hand = 0; hand < 2; hand++) {
+            struct vr_controller c;
+            s.HandPoses[hand].ThePose.Orientation.w = 1.0f;
+            if (vr_backend_controller(hand, &c) && c.pose_valid) {
+                s.HandPoses[hand] = c.pose;
+                s.HandStatusFlags[hand] = 0x0001 | 0x0002;
+            }
+        }
     }
     return s;
 }
@@ -555,7 +577,6 @@ NO_SESSION(ovr_SetTrackingOriginType)
 NO_SESSION(ovr_RecenterTrackingOrigin)
 NO_SESSION(ovr_SpecifyTrackingOrigin)
 NO_SESSION(ovr_GetDevicePoses)
-NO_SESSION(ovr_GetInputState)
 NO_SESSION(ovr_SetControllerVibration)
 NO_SESSION(ovr_SubmitControllerVibration)
 NO_SESSION(ovr_GetControllerVibrationState)
@@ -897,8 +918,166 @@ EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
 {
     TRACE_FIRST();
     (void)session;
-    return 0;
+    unsigned types = 0;
+    struct vr_controller c;
+    if (vr_backend_controller(0, &c))
+        types |= ovrControllerType_LTouch;
+    if (vr_backend_controller(1, &c))
+        types |= ovrControllerType_RTouch;
+    return types;
 }
+
+EXPORT double ovr_GetTimeInSeconds(void);
+
+/* Radial thumbstick deadzone like LibOVR's, rescaled so it starts at 0. */
+static ovrVector2f stick_deadzone(ovrVector2f v)
+{
+    const float dz = 0.2f;
+    float len = sqrtf(v.x * v.x + v.y * v.y);
+    ovrVector2f out = {0.0f, 0.0f};
+    if (len > dz) {
+        float scale = (len > 1.0f ? 1.0f : (len - dz) / (1.0f - dz)) / len;
+        out.x = v.x * scale;
+        out.y = v.y * scale;
+    }
+    return out;
+}
+
+/* SteamVR's legacy input for Touch-style controllers: A/X on k_EButton_A,
+ * B/Y on ApplicationMenu, the stick on Axis0, trigger on Axis1, grip on
+ * Axis2. Mapped to LibOVR's per-hand bits. */
+#define VRBIT(id) (1ull << (id))
+EXPORT ovrResult ovr_GetInputState(ovrSession session, int controllerType,
+                                   ovrInputState *out)
+{
+    TRACE_FIRST();
+    if (!out)
+        return set_error(ovrError_InvalidParameter, "null inputState");
+    ovrInputState st;
+    memset(&st, 0, sizeof(st));
+    st.TimeInSeconds = ovr_GetTimeInSeconds();
+    if (session_live(session) &&
+        (controllerType & ovrControllerType_Touch)) {
+        static const unsigned btn_lo[2] = {ovrButton_X, ovrButton_A};
+        static const unsigned btn_hi[2] = {ovrButton_Y, ovrButton_B};
+        static const unsigned btn_stick[2] = {ovrButton_LThumb, ovrButton_RThumb};
+        static const unsigned t_lo[2] = {ovrTouch_X, ovrTouch_A};
+        static const unsigned t_hi[2] = {ovrTouch_Y, ovrTouch_B};
+        static const unsigned t_stick[2] = {ovrTouch_LThumb, ovrTouch_RThumb};
+        static const unsigned t_trig[2] = {ovrTouch_LIndexTrigger, ovrTouch_RIndexTrigger};
+        static const unsigned t_point[2] = {ovrTouch_LIndexPointing, ovrTouch_RIndexPointing};
+        static const unsigned t_up[2] = {ovrTouch_LThumbUp, ovrTouch_RThumbUp};
+        for (int hand = 0; hand < 2; hand++) {
+            unsigned type = hand ? ovrControllerType_RTouch : ovrControllerType_LTouch;
+            struct vr_controller c;
+            if (!(controllerType & type) || !vr_backend_controller(hand, &c))
+                continue;
+            st.ControllerType |= type;
+            if (c.pressed & VRBIT(VR_BUTTON_A))
+                st.Buttons |= btn_lo[hand];
+            if (c.pressed & VRBIT(VR_BUTTON_APP_MENU))
+                st.Buttons |= btn_hi[hand];
+            if (c.pressed & VRBIT(VR_BUTTON_AXIS0))
+                st.Buttons |= btn_stick[hand];
+            int thumb_on = 0;
+            if (c.touched & VRBIT(VR_BUTTON_A)) {
+                st.Touches |= t_lo[hand];
+                thumb_on = 1;
+            }
+            if (c.touched & VRBIT(VR_BUTTON_APP_MENU)) {
+                st.Touches |= t_hi[hand];
+                thumb_on = 1;
+            }
+            if (c.touched & VRBIT(VR_BUTTON_AXIS0)) {
+                st.Touches |= t_stick[hand];
+                thumb_on = 1;
+            }
+            if (c.touched & VRBIT(VR_BUTTON_AXIS1))
+                st.Touches |= t_trig[hand];
+            else
+                st.Touches |= t_point[hand];
+            if (!thumb_on)
+                st.Touches |= t_up[hand];
+            ovrVector2f stick = {c.axis[0][0], c.axis[0][1]};
+            st.ThumbstickRaw[hand] = st.ThumbstickNoDeadzone[hand] = stick;
+            st.Thumbstick[hand] = stick_deadzone(stick);
+            st.IndexTriggerRaw[hand] = st.IndexTriggerNoDeadzone[hand] =
+                st.IndexTrigger[hand] = c.axis[1][0];
+            st.HandTriggerRaw[hand] = st.HandTriggerNoDeadzone[hand] =
+                st.HandTrigger[hand] = c.axis[2][0];
+        }
+    }
+    /* Write only the part of the struct the caller's SDK has. */
+    size_t n = g_minor >= 17 ? sizeof(st)
+             : g_minor >= 11 ? offsetof(ovrInputState, IndexTriggerRaw)
+             : offsetof(ovrInputState, IndexTriggerNoDeadzone);
+    memcpy(out, &st, n);
+    static unsigned last_buttons = ~0u;
+    if (st.Buttons != last_buttons) {
+        LOG("input: controllers 0x%x buttons 0x%x touches 0x%x", st.ControllerType,
+            st.Buttons, st.Touches);
+        last_buttons = st.Buttons;
+    }
+    return session_live(session) ? ovrSuccess
+        : set_error(ovrError_InvalidSession, "no session");
+}
+
+/* ---- Entry points from newer SDKs (1.2x-1.4x) ----------------------------
+ * A game's LibOVR loader resolves its SDK's whole function list and rejects
+ * the runtime if any is missing (OVRPlugin asks for ovr_IsExtensionSupported
+ * first). None of these features are backed by SteamVR, so they report
+ * "unsupported" and games fall back to the plain path. */
+EXPORT ovrResult ovr_IsExtensionSupported(ovrSession session, int extension,
+                                          ovrBool *supported)
+{
+    TRACE_FIRST();
+    (void)session; (void)extension;
+    if (supported)
+        *supported = ovrFalse;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_EnableExtension(ovrSession session, int extension)
+{
+    TRACE_FIRST();
+    (void)session;
+    LOG("ovr_EnableExtension(%d) -> unsupported", extension);
+    return set_error(ovrError_Unsupported, "extension not supported");
+}
+
+EXPORT ovrResult ovr_ReportClientInfo(unsigned compilerVersion, int productVersion,
+                                      int majorVersion, int minorVersion,
+                                      int patchVersion, int buildNumber)
+{
+    TRACE_FIRST();
+    (void)compilerVersion; (void)productVersion; (void)majorVersion;
+    (void)minorVersion; (void)patchVersion; (void)buildNumber;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SetClientColorDesc(ovrSession session, const void *desc)
+{
+    TRACE_FIRST();
+    (void)session; (void)desc;
+    return ovrSuccess;
+}
+
+#define UNSUPPORTED(name)                                     \
+    EXPORT ovrResult name(void)                               \
+    {                                                         \
+        TRACE_FIRST();                                        \
+        return set_error(ovrError_Unsupported, #name ": unsupported"); \
+    }
+
+UNSUPPORTED(ovr_GetFovStencil)
+UNSUPPORTED(ovr_GetViewportStencil)
+UNSUPPORTED(ovr_GetInstanceExtensionsVk)
+UNSUPPORTED(ovr_GetDeviceExtensionsVk)
+UNSUPPORTED(ovr_GetSessionPhysicalDeviceVk)
+UNSUPPORTED(ovr_CreateTextureSwapChainVk)
+UNSUPPORTED(ovr_GetTextureSwapChainBufferVk)
+UNSUPPORTED(ovr_CreateMirrorTextureWithOptionsVk)
+UNSUPPORTED(ovr_GetMirrorTextureBufferVk)
 
 EXPORT void ovr_DestroyMirrorTexture(ovrSession session, ovrMirrorTexture tex)
 {
