@@ -135,10 +135,14 @@ input, on Linux Mint with Proton 11 and a Quest 3 via SteamVR.
 submits frames, but renders black (even flat with `-nohmd`), so that one is
 blocked on the game itself rather than the shim.
 
-Use a Proton at least as new as the one that created the prefix. In the
-tests, Proton 9 failed the game's signature check in a prefix made by Proton
-10; Proton 10 and 11 both pass. `add-to-steam --prefix` picks the version
-recorded in the prefix when Steam has a tool by that name.
+Use a recent Proton (Proton 11 works). Proton's VR bridge only offers the
+SteamVR interface versions that existed when it was built, so with an older
+Proton the game loads the shim but SteamVR hands back no display (the log
+says `could not get OpenVR interfaces`). `add-to-steam` therefore forces the
+newest numbered Proton you have installed; `--proton-tool` overrides it. A
+newer Proton also upgrades a prefix an older one made, while the reverse can
+fail (Proton 9 failed the signature check in a Proton 10 prefix). Each
+`ovrstub.log` names the Wine/Proton build it ran on, on its second line.
 
 `ovrl launch` runs the game under a bare `proton run`, which is enough to
 reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
@@ -187,7 +191,8 @@ in its **Properties**:
   this in when you browse to the exe).
 - **Launch Options**: paste the printed line, e.g.
   `OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "Game.exe" -hmd=OculusRift`
-- **Compatibility**: force the same Proton version you use elsewhere.
+- **Compatibility**: force a recent Proton (Proton 11 works); an older one
+  leaves the game without VR.
 
 Start SteamVR, then launch the entry from your library. Steam wires up the VR
 bridge, Proton loads our shim through the injector, and the shim renders the

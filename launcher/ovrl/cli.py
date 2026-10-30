@@ -395,6 +395,40 @@ def _steam_running() -> bool:
         return False
 
 
+def _steam_libraries(root: Path) -> list[Path]:
+    """Every Steam library folder (steamapps/libraryfolders.vdf), root first."""
+    libs = [root]
+    vdf = root / "steamapps/libraryfolders.vdf"
+    try:
+        data = steam.parse_text_vdf(vdf.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return libs
+    folders = next(iter(data.values()), {}) if data else {}
+    for entry in (folders.values() if isinstance(folders, dict) else []):
+        if isinstance(entry, dict) and entry.get("path"):
+            lib = Path(entry["path"])
+            if lib.is_dir() and lib.resolve() != root.resolve():
+                libs.append(lib)
+    return libs
+
+
+def newest_proton_tool(root: Path) -> str | None:
+    """Steam's name (proton_N) for the newest numbered Proton installed.
+
+    Proton's VR bridge only offers the OpenVR interface versions that
+    existed when it was built; older ones connect to SteamVR but hand our
+    shim no IVRSystem/IVRCompositor. A newer Proton also upgrades a prefix
+    an older one made, so the newest installed is the safe choice.
+    """
+    best = None
+    for lib in _steam_libraries(root):
+        for d in (lib / "steamapps/common").glob("Proton [0-9]*"):
+            m = re.match(r"Proton (\d+)", d.name)
+            if m and (d / "proton").is_file():
+                best = max(best or 0, int(m.group(1)))
+    return f"proton_{best}" if best else None
+
+
 def _prefix_proton_tool(prefix: Path | None, cfg: dict) -> str | None:
     """The compat tool matching the Proton that created `prefix`, if known.
 
@@ -499,8 +533,8 @@ def add_shortcuts(games: list[dict], prefix: str | None = None,
         if steam.parse_text_vdf(steam.dump_text_vdf(cfg)) != cfg:
             sys.exit(f"ovrl: refusing to edit {config}: it doesn't round-trip "
                      "through our parser")
-        tool = proton_tool or _prefix_proton_tool(pfx, cfg) \
-            or steam.detect_proton_tool(cfg)
+        tool = proton_tool or newest_proton_tool(root) \
+            or _prefix_proton_tool(pfx, cfg) or steam.detect_proton_tool(cfg)
 
     if shortcuts.is_file():
         shutil.copy2(shortcuts, shortcuts.with_suffix(".vdf.ovrl-bak"))
@@ -773,8 +807,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="value for the game's -hmd arg (default: auto, as "
                         "for steam-setup)")
     s.add_argument("--proton-tool", metavar="NAME",
-                   help="compat tool name, e.g. proton_10 (default: reuse the one "
-                        "your other games are mapped to)")
+                   help="compat tool name, e.g. proton_11 (default: the newest "
+                        "numbered Proton installed)")
     s.add_argument("--prefix", metavar="COMPATDATA",
                    help="Proton prefix (compatdata dir) to run in instead of the "
                         "fresh one Steam would create, e.g. one set up with "
