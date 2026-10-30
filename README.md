@@ -146,8 +146,24 @@ python3 -m ovrl steam-setup "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dl
 # --real-platform, --openvr and --hmd work as for the commands above.
 ```
 
-It prints the exact shortcut settings. In Steam: **Add a Non-Steam Game**,
-browse to `ovrinject.exe` in the game folder, then in its **Properties**:
+Then write the Steam shortcut the way Heroic does — straight into Steam's
+config, no dialogs. **Quit Steam fully first** (it rewrites its config on
+exit, which would discard the change):
+
+```sh
+python3 -m ovrl add-to-steam "$GAME" --name "Spider-Man Homecoming VR"
+```
+
+This adds the entry to `userdata/<you>/config/shortcuts.vdf` (flagged as a VR
+app) and forces Proton for it in `config/config.vdf`, reusing whichever
+Proton your other games already map to (`--proton-tool` overrides). Both files
+are backed up as `*.ovrl-bak` and must round-trip through the parser before
+they are touched, so a surprise in Steam's format aborts rather than losing
+your other shortcuts. Start Steam and the game is in your library.
+
+If you'd rather use the Steam UI, `steam-setup` printed the exact settings:
+**Add a Non-Steam Game**, browse to `ovrinject.exe` in the game folder, then
+in its **Properties**:
 
 - **Target** stays `ovrinject.exe`, **Start In** the game folder (Steam fills
   this in when you browse to the exe).
