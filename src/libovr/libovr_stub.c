@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <mmdeviceapi.h>
+#include <mmsystem.h>
 
 #include "../common/log.h"
 #include "iat_hook.h"
@@ -281,57 +283,102 @@ EXPORT ovrResult ovr_SetExternalCameraProperties(ovrSession session, const char 
 }
 
 /* Audio device queries: report the system default (WAVE_MAPPER / empty). */
-EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(ovrSession session, unsigned *deviceOutId)
+/* Audio device queries. Unlike nearly every other entry point these take no
+ * session (the real runtime just reports the Rift's headphones and mic), so
+ * the signatures must match exactly or the caller's buffer is misread. We
+ * report the system's default devices, as Revive does, so the game plays
+ * through whatever output the user has selected. */
+#define OVR_AUDIO_MAX_DEVICE_STR_SIZE 128
+
+static const GUID kClsidMMDeviceEnumerator =
+    {0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
+static const GUID kIidIMMDeviceEnumerator =
+    {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+/* DirectSound's default playback/capture device ids. */
+static const GUID kDsDefaultPlayback =
+    {0xdef00000, 0x9c6d, 0x47ed, {0xaa, 0xf1, 0x4d, 0xda, 0x8f, 0x2b, 0x5c, 0x03}};
+static const GUID kDsDefaultCapture =
+    {0xdef00001, 0x9c6d, 0x47ed, {0xaa, 0xf1, 0x4d, 0xda, 0x8f, 0x2b, 0x5c, 0x03}};
+
+/* Copy the default endpoint's id (eRender = 0, eCapture = 1; role eConsole
+ * = 0) into buf; leaves buf empty if there is no such device. */
+static void default_endpoint_id(int flow, wchar_t *buf)
+{
+    buf[0] = 0;
+    HRESULT init = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL;
+    if (SUCCEEDED(CoCreateInstance(&kClsidMMDeviceEnumerator, NULL, CLSCTX_ALL,
+                                   &kIidIMMDeviceEnumerator, (void **)&en))) {
+        IMMDevice *dev = NULL;
+        if (SUCCEEDED(en->lpVtbl->GetDefaultAudioEndpoint(en, (EDataFlow)flow,
+                                                          eConsole, &dev))) {
+            LPWSTR id = NULL;
+            if (SUCCEEDED(dev->lpVtbl->GetId(dev, &id)) && id) {
+                wcsncpy(buf, id, OVR_AUDIO_MAX_DEVICE_STR_SIZE - 1);
+                buf[OVR_AUDIO_MAX_DEVICE_STR_SIZE - 1] = 0;
+                CoTaskMemFree(id);
+            }
+            dev->lpVtbl->Release(dev);
+        }
+        en->lpVtbl->Release(en);
+    }
+    if (SUCCEEDED(init))
+        CoUninitialize();
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(unsigned *deviceOutId)
 {
     TRACE_FIRST();
-    (void)session;
-    if (deviceOutId)
-        *deviceOutId = 0;
+    if (!deviceOutId)
+        return set_error(ovrError_InvalidParameter, "null deviceOutId");
+    *deviceOutId = WAVE_MAPPER;
     return ovrSuccess;
 }
 
-EXPORT ovrResult ovr_GetAudioDeviceInWaveId(ovrSession session, unsigned *deviceInId)
+EXPORT ovrResult ovr_GetAudioDeviceInWaveId(unsigned *deviceInId)
 {
     TRACE_FIRST();
-    (void)session;
-    if (deviceInId)
-        *deviceInId = 0;
+    if (!deviceInId)
+        return set_error(ovrError_InvalidParameter, "null deviceInId");
+    *deviceInId = WAVE_MAPPER;
     return ovrSuccess;
 }
 
-EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(ovrSession session, wchar_t *buffer)
+EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(wchar_t *buffer)
 {
     TRACE_FIRST();
-    (void)session;
-    if (buffer)
-        buffer[0] = 0;
+    if (!buffer)
+        return set_error(ovrError_InvalidParameter, "null buffer");
+    default_endpoint_id(eRender, buffer);
+    LOG("ovr_GetAudioDeviceOutGuidStr -> \"%ls\"", buffer);
     return ovrSuccess;
 }
 
-EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(ovrSession session, wchar_t *buffer)
+EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
 {
     TRACE_FIRST();
-    (void)session;
-    if (buffer)
-        buffer[0] = 0;
+    if (!buffer)
+        return set_error(ovrError_InvalidParameter, "null buffer");
+    default_endpoint_id(eCapture, buffer);
+    LOG("ovr_GetAudioDeviceInGuidStr -> \"%ls\"", buffer);
     return ovrSuccess;
 }
 
-EXPORT ovrResult ovr_GetAudioDeviceOutGuid(ovrSession session, GUID *guid)
+EXPORT ovrResult ovr_GetAudioDeviceOutGuid(GUID *guid)
 {
     TRACE_FIRST();
-    (void)session;
-    if (guid)
-        memset(guid, 0, sizeof(*guid));
+    if (!guid)
+        return set_error(ovrError_InvalidParameter, "null guid");
+    *guid = kDsDefaultPlayback;
     return ovrSuccess;
 }
 
-EXPORT ovrResult ovr_GetAudioDeviceInGuid(ovrSession session, GUID *guid)
+EXPORT ovrResult ovr_GetAudioDeviceInGuid(GUID *guid)
 {
     TRACE_FIRST();
-    (void)session;
-    if (guid)
-        memset(guid, 0, sizeof(*guid));
+    if (!guid)
+        return set_error(ovrError_InvalidParameter, "null guid");
+    *guid = kDsDefaultCapture;
     return ovrSuccess;
 }
 
