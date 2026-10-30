@@ -926,6 +926,14 @@ EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameInd
 
 /* ---- Properties: always return the caller's default -------------------- */
 
+/* Log the first few property lookups by name, so we know what a game asks. */
+static void log_property(const char *fn, const char *name)
+{
+    static LONG n;
+    if (InterlockedIncrement(&n) <= 40)
+        LOG("%s(\"%s\")", fn, name ? name : "(null)");
+}
+
 EXPORT ovrBool ovr_GetBool(ovrSession s, const char *name, ovrBool def)
 {
     TRACE_FIRST();
@@ -954,14 +962,6 @@ EXPORT ovrBool ovr_SetInt(ovrSession s, const char *name, int v)
     TRACE_FIRST();
     (void)s; (void)name; (void)v;
     return ovrFalse;
-}
-
-/* Log the first few property lookups by name, so we know what a game asks. */
-static void log_property(const char *fn, const char *name)
-{
-    static LONG n;
-    if (InterlockedIncrement(&n) <= 40)
-        LOG("%s(\"%s\")", fn, name ? name : "(null)");
 }
 
 /* LibOVR's built-in user-profile defaults (OVR_CAPI_Keys.h). */
