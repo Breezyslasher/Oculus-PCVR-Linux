@@ -832,6 +832,14 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 uMin = vMin = 0.0f;
                 uMax = vMax = 1.0f;
             }
+            /* ovrLayerFlag_TextureOriginAtBottomLeft (Unity and GL games):
+             * the viewport is measured from the bottom and the image is
+             * stored bottom-up. Mirroring v both maps the viewport and, as
+             * vMin > vMax, has the compositor flip the image upright. */
+            if (h->Flags & 0x2) {
+                vMin = 1.0f - vMin;
+                vMax = 1.0f - vMax;
+            }
             if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax))
                 submitted++;
         }
@@ -1051,11 +1059,17 @@ EXPORT ovrResult ovr_GetInputState(ovrSession session, int controllerType,
              : g_minor >= 11 ? offsetof(ovrInputState, IndexTriggerRaw)
              : offsetof(ovrInputState, IndexTriggerNoDeadzone);
     memcpy(out, &st, n);
-    static unsigned last_buttons = ~0u;
-    if (st.Buttons != last_buttons) {
-        LOG("input: controllers 0x%x buttons 0x%x touches 0x%x", st.ControllerType,
-            st.Buttons, st.Touches);
-        last_buttons = st.Buttons;
+    /* Games poll each controller type separately, so log changes per type
+     * (Touch, LTouch, RTouch, or any other request). */
+    static unsigned last[4][2] = {{~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u}, {~0u, ~0u}};
+    int slot = controllerType == ovrControllerType_LTouch ? 1
+             : controllerType == ovrControllerType_RTouch ? 2
+             : controllerType == ovrControllerType_Touch ? 0 : 3;
+    if (st.Buttons != last[slot][0] || st.Touches != last[slot][1]) {
+        LOG("input(request 0x%x): controllers 0x%x buttons 0x%x touches 0x%x",
+            (unsigned)controllerType, st.ControllerType, st.Buttons, st.Touches);
+        last[slot][0] = st.Buttons;
+        last[slot][1] = st.Touches;
     }
     return session_live(session) ? ovrSuccess
         : set_error(ovrError_InvalidSession, "no session");
