@@ -78,6 +78,25 @@ file as things get confirmed or disproved on real games.
   all other files verify normally. `OVRSTUB_FAKE_SIGNATURE=0` disables it.
   Loaders that also compare the signer name/thumbprint against Meta's real
   cert would still reject it; the sigcheck trace shows what each game calls.
+- Confirmed on Spider-Man: Homecoming VR that this is not enough. With the
+  `WinVerifyTrust` hook in place the Platform stub loads, but the runtime is
+  still only `CreateFileW`-opened, never `LoadLibrary`-ed: the game's LibOVR
+  loader reads the file's embedded code-signing certificate and checks that
+  the publisher is Meta (the `Oculus VR, LLC` string), which our stub cannot
+  satisfy.
+
+  **Design decision: do not fabricate Meta's signing identity.** Making the
+  stub present a certificate that claims to be signed by "Oculus VR, LLC"
+  would mean forging a vendor's code-signing credentials, which this project
+  will not do, even for games the user owns. The supported path is Revive's:
+  the user supplies Meta's own freely-distributed, genuinely signed
+  `LibOVRRT64_1.dll` (from the Meta PC runtime). That real file sits on disk
+  so the game's authenticity check passes against a legitimate Meta binary,
+  and our existing `LoadLibrary` redirect swaps our implementation in at load
+  time, so none of Meta's service-dependent code runs. This keeps the
+  authenticity check meaningful (it is validating a real Meta file) instead
+  of defeating it. TODO: add an `ovrl` step that places a user-provided real
+  runtime next to the game and relies on the redirect for the swap.
 
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 
