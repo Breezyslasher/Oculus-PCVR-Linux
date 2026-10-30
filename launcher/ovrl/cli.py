@@ -28,6 +28,30 @@ RUNTIME_DLL = "LibOVRRT64_1.dll"
 INJECTOR = "ovrinject.exe"
 BACKUP_SUFFIX = ".ovrl-orig"
 
+# Both stub DLLs embed this marker (see the stub sources), so we can tell our
+# own build apart from a game's genuine file.
+STUB_MARKER = b"OVRSTUB-BUILD-MARKER-v1"
+
+
+def _is_our_stub(path: Path) -> bool:
+    try:
+        return STUB_MARKER in path.read_bytes()
+    except OSError:
+        return False
+
+
+def _check_real_runtime(path: Path) -> Path:
+    """Validate a user-supplied genuine Meta runtime before installing it."""
+    if not path.is_file():
+        sys.exit(f"ovrl: {path} not found")
+    data = path.read_bytes()
+    if data[:2] != b"MZ":
+        sys.exit(f"ovrl: {path} is not a Windows DLL")
+    if STUB_MARKER in data:
+        sys.exit(f"ovrl: {path} is an ovrstub build, not Meta's signed runtime; "
+                 "supply the real LibOVRRT64_1.dll from a Meta PC runtime install")
+    return path
+
 # Where the fake Oculus install lives inside the prefix, as Windows and Unix paths.
 STUB_BASE_WIN = "C:\\ovrstub\\"
 STUB_BASE_REL = Path("drive_c/ovrstub")
@@ -53,28 +77,39 @@ def cmd_stubs(args: argparse.Namespace) -> int:
     game_dir = Path(args.game_dir)
     if not game_dir.is_dir():
         sys.exit(f"ovrl: {game_dir} is not a directory")
-    stubs = [RUNTIME_DLL, PLATFORM_DLL]
 
     if args.action == "install":
         build = Path(args.build)
-        for name in stubs:
+        # The game's LibOVR loader often verifies the runtime is Meta-signed
+        # before loading it. With --real-runtime we place Meta's own genuine
+        # signed LibOVRRT64_1.dll here so that check passes against a real
+        # file; the injected shim's LoadLibrary redirect still swaps our
+        # implementation in at load, so Meta's service code never runs. The
+        # Platform SDK stub is always ours.
+        runtime_src = (_check_real_runtime(Path(args.real_runtime))
+                       if args.real_runtime else _build_file(build, RUNTIME_DLL))
+        sources = {RUNTIME_DLL: runtime_src, PLATFORM_DLL: _build_file(build, PLATFORM_DLL)}
+        for name, src in sources.items():
             target = game_dir / name
             backup = game_dir / (name + BACKUP_SUFFIX)
-            if target.exists() and not backup.exists():
+            # Never back up one of our own stubs as if it were the original.
+            if target.exists() and not backup.exists() and not _is_our_stub(target):
                 shutil.copy2(target, backup)
                 print(f"backed up original to {backup}")
-            shutil.copy2(_build_file(build, name), target)
-            print(f"installed stub {target}")
+            shutil.copy2(src, target)
+            kind = "real runtime" if src is runtime_src and args.real_runtime else "stub"
+            print(f"installed {kind} {target}")
     else:
         restored = False
-        for name in stubs:
+        for name in (RUNTIME_DLL, PLATFORM_DLL):
             target = game_dir / name
             backup = game_dir / (name + BACKUP_SUFFIX)
             if backup.exists():
                 shutil.move(str(backup), str(target))
                 print(f"restored {target}")
                 restored = True
-            elif target.exists():
+            elif target.exists() and _is_our_stub(target):
+                # Only remove a file we put here; leave a real runtime alone.
                 target.unlink()
                 print(f"removed stub {target} (no original to restore)")
                 restored = True
@@ -232,9 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="directory with the built DLLs (default: %(default)s)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("stubs", help="install/restore both stub DLLs in a game's exe folder")
+    s = sub.add_parser("stubs", help="install/restore the stubs in a game's exe folder")
     s.add_argument("action", choices=["install", "restore"])
     s.add_argument("game_dir")
+    s.add_argument("--real-runtime", metavar="LibOVRRT64_1.dll",
+                   help="genuine Meta-signed runtime to place for the signature "
+                        "check; the shim still provides the implementation")
     s.set_defaults(func=cmd_stubs)
 
     s = sub.add_parser("prefix-setup", help="install the LibOVR shim into a Wine/Proton prefix")

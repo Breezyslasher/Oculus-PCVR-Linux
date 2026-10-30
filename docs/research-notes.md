@@ -95,8 +95,11 @@ file as things get confirmed or disproved on real games.
   and our existing `LoadLibrary` redirect swaps our implementation in at load
   time, so none of Meta's service-dependent code runs. This keeps the
   authenticity check meaningful (it is validating a real Meta file) instead
-  of defeating it. TODO: add an `ovrl` step that places a user-provided real
-  runtime next to the game and relies on the redirect for the swap.
+  of defeating it. `ovrl stubs install --real-runtime <LibOVRRT64_1.dll>`
+  does this: it places the user-supplied genuine runtime next to the exe
+  (our stubs carry an `OVRSTUB-BUILD-MARKER-v1` marker so a real file is
+  never mistaken for one of ours), and the injected shim's redirect swaps
+  our implementation in at load.
 
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 

@@ -96,9 +96,16 @@ P=~/.local/share/ovrl/prefixes/mygame    # a Proton compatdata dir
 PROTON=~/.steam/steam/steamapps/common/"Proton 10.0"
 
 cd launcher
-# Put both stubs next to the game exe (keeps backups as *.ovrl-orig). The
+# Put the stubs next to the game exe (keeps backups as *.ovrl-orig). The
 # LibOVR loader searches the exe folder for a bare LibOVRRT64_1.dll.
-python3 -m ovrl stubs install "$GAME"
+#
+# Many games verify the runtime is signed by Meta before loading it. For
+# those, pass Meta's own genuine signed LibOVRRT64_1.dll (from a Meta PC
+# runtime install) so the check passes against a real file; the injected
+# shim still swaps our implementation in at load, so no Meta service runs:
+python3 -m ovrl stubs install "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dll
+# Games without that check work with just:
+#   python3 -m ovrl stubs install "$GAME"
 
 # Install the shim into the prefix and register a fake Oculus install
 python3 -m ovrl prefix-setup "$P" --wine "$PROTON/files/bin/wine"
