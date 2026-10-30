@@ -13,6 +13,15 @@
 
 #define LOG(...) stub_log("libovr-redirect", __VA_ARGS__)
 #define TRACE(...) stub_log("libovr-trace", __VA_ARGS__)
+/* For hooks a game hits every frame (it polls the OculusHMDConnected event
+ * ~10x per frame): log the first few calls only. Writing and flushing a log
+ * line per call from the render thread caused visible stutter. */
+#define TRACE_FEW(...)                                       \
+    do {                                                     \
+        static LONG n_;                                      \
+        if (InterlockedIncrement(&n_) <= 8)                  \
+            TRACE(__VA_ARGS__);                              \
+    } while (0)
 
 static HMODULE g_self;
 static WCHAR g_self_path[MAX_PATH];
@@ -178,28 +187,28 @@ static HMODULE WINAPI hook_LoadLibraryExA(LPCSTR name, HANDLE file, DWORD flags)
 static HANDLE WINAPI hook_OpenEventW(DWORD access, BOOL inherit, LPCWSTR name)
 {
     HANDLE h = real_OpenEventW(access, inherit, name);
-    TRACE("OpenEventW(%ls) -> %s", name ? name : L"(null)", h ? "found" : "not found");
+    TRACE_FEW("OpenEventW(%ls) -> %s", name ? name : L"(null)", h ? "found" : "not found");
     return h;
 }
 
 static HANDLE WINAPI hook_OpenEventA(DWORD access, BOOL inherit, LPCSTR name)
 {
     HANDLE h = real_OpenEventA(access, inherit, name);
-    TRACE("OpenEventA(%s) -> %s", name ? name : "(null)", h ? "found" : "not found");
+    TRACE_FEW("OpenEventA(%s) -> %s", name ? name : "(null)", h ? "found" : "not found");
     return h;
 }
 
 static HANDLE WINAPI hook_OpenMutexW(DWORD access, BOOL inherit, LPCWSTR name)
 {
     HANDLE h = real_OpenMutexW(access, inherit, name);
-    TRACE("OpenMutexW(%ls) -> %s", name ? name : L"(null)", h ? "found" : "not found");
+    TRACE_FEW("OpenMutexW(%ls) -> %s", name ? name : L"(null)", h ? "found" : "not found");
     return h;
 }
 
 static HANDLE WINAPI hook_OpenMutexA(DWORD access, BOOL inherit, LPCSTR name)
 {
     HANDLE h = real_OpenMutexA(access, inherit, name);
-    TRACE("OpenMutexA(%s) -> %s", name ? name : "(null)", h ? "found" : "not found");
+    TRACE_FEW("OpenMutexA(%s) -> %s", name ? name : "(null)", h ? "found" : "not found");
     return h;
 }
 
@@ -207,7 +216,7 @@ static DWORD WINAPI hook_GetEnvironmentVariableW(LPCWSTR name, LPWSTR buf, DWORD
 {
     DWORD r = real_GetEnvironmentVariableW(name, buf, size);
     if (contains_w(name, k_ovr_words))
-        TRACE("GetEnvironmentVariableW(%ls) -> %s", name,
+        TRACE_FEW("GetEnvironmentVariableW(%ls) -> %s", name,
               r && r < size ? "set" : (r ? "set (buffer too small)" : "not set"));
     return r;
 }
@@ -216,7 +225,7 @@ static DWORD WINAPI hook_GetEnvironmentVariableA(LPCSTR name, LPSTR buf, DWORD s
 {
     DWORD r = real_GetEnvironmentVariableA(name, buf, size);
     if (contains_a(name, k_ovr_words))
-        TRACE("GetEnvironmentVariableA(%s) -> %s%s", name,
+        TRACE_FEW("GetEnvironmentVariableA(%s) -> %s%s", name,
               r && r < size ? "\"" : (r ? "set (buffer too small)" : "not set"),
               r && r < size ? buf : "");
     return r;
@@ -226,7 +235,7 @@ static char *hook_getenv(const char *name)
 {
     char *v = real_getenv(name);
     if (contains_a(name, k_ovr_words))
-        TRACE("getenv(%s) -> %s", name, v ? v : "(not set)");
+        TRACE_FEW("getenv(%s) -> %s", name, v ? v : "(not set)");
     return v;
 }
 
@@ -234,7 +243,7 @@ static wchar_t *hook__wgetenv(const wchar_t *name)
 {
     wchar_t *v = real__wgetenv(name);
     if (contains_w(name, k_ovr_words))
-        TRACE("_wgetenv(%ls) -> %ls", name, v ? v : L"(not set)");
+        TRACE_FEW("_wgetenv(%ls) -> %ls", name, v ? v : L"(not set)");
     return v;
 }
 

@@ -75,7 +75,8 @@ bool vr_backend_begin_frame(void);
  * [uMin,vMin]-[uMax,vMax] selects this eye's region (0,0,1,1 for a whole
  * per-eye texture). Returns false on compositor error. */
 bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
-                           float uMin, float vMin, float uMax, float vMax);
+                           float uMin, float vMin, float uMax, float vMax,
+                           const ovrPosef *render_pose);
 
 void vr_backend_present(void);
 /* Log what the compositor thinks of us (scene focus, presents, drops). */

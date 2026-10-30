@@ -118,6 +118,10 @@ bool vr_backend_init(void)
         return false;
     }
 
+    /* Our poses are in standing space; make the compositor's match, since
+     * it interprets submitted render poses in its own tracking space. */
+    if (g_compositor->SetTrackingSpace)
+        g_compositor->SetTrackingSpace(ETrackingUniverseOrigin_TrackingUniverseStanding);
     g_active = 1;
     LOG("OpenVR backend up (%s, %s)", IVRSystem_Version, IVRCompositor_Version);
     return true;
@@ -350,8 +354,59 @@ bool vr_backend_begin_frame(void)
     return e == EVRCompositorError_VRCompositorError_None;
 }
 
+/* Rigid transform helpers on OpenVR's 3x4 row-major matrices. */
+static HmdMatrix34_t matrix_from_pose(const ovrPosef *p)
+{
+    float x = p->Orientation.x, y = p->Orientation.y, z = p->Orientation.z,
+          w = p->Orientation.w;
+    float n = sqrtf(x * x + y * y + z * z + w * w);
+    if (n > 0.0f) {
+        x /= n; y /= n; z /= n; w /= n;
+    }
+    HmdMatrix34_t m;
+    m.m[0][0] = 1 - 2 * (y * y + z * z);
+    m.m[0][1] = 2 * (x * y - z * w);
+    m.m[0][2] = 2 * (x * z + y * w);
+    m.m[1][0] = 2 * (x * y + z * w);
+    m.m[1][1] = 1 - 2 * (x * x + z * z);
+    m.m[1][2] = 2 * (y * z - x * w);
+    m.m[2][0] = 2 * (x * z - y * w);
+    m.m[2][1] = 2 * (y * z + x * w);
+    m.m[2][2] = 1 - 2 * (x * x + y * y);
+    m.m[0][3] = p->Position.x;
+    m.m[1][3] = p->Position.y;
+    m.m[2][3] = p->Position.z;
+    return m;
+}
+
+static HmdMatrix34_t matrix_inverse_rigid(const HmdMatrix34_t *a)
+{
+    HmdMatrix34_t r;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            r.m[i][j] = a->m[j][i];
+    for (int i = 0; i < 3; i++)
+        r.m[i][3] = -(r.m[i][0] * a->m[0][3] + r.m[i][1] * a->m[1][3] +
+                      r.m[i][2] * a->m[2][3]);
+    return r;
+}
+
+static HmdMatrix34_t matrix_mul(const HmdMatrix34_t *a, const HmdMatrix34_t *b)
+{
+    HmdMatrix34_t r;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 4; j++) {
+            r.m[i][j] = a->m[i][0] * b->m[0][j] + a->m[i][1] * b->m[1][j] +
+                        a->m[i][2] * b->m[2][j];
+        }
+        r.m[i][3] += a->m[i][3];
+    }
+    return r;
+}
+
 bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
-                           float uMin, float vMin, float uMax, float vMax)
+                           float uMin, float vMin, float uMax, float vMax,
+                           const ovrPosef *render_pose)
 {
     if (!g_active || !d3d11_texture)
         return false;
@@ -370,6 +425,31 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
     }
     tex.eColorSpace = (EColorSpace)cs;
     struct VRTextureBounds_t bounds = {uMin, vMin, uMax, vMax};
+    /* Tell the compositor which head pose the game rendered this eye from.
+     * Without it, reprojection assumes WaitGetPoses' pose, which differs
+     * from the one the game predicted, and the view warps and shifts as
+     * the head moves. LibOVR's RenderPose is the eye's pose; the compositor
+     * wants the HMD's, so remove the eye-to-head offset. */
+    const ovrQuatf *q = render_pose ? &render_pose->Orientation : NULL;
+    if (q && q->x * q->x + q->y * q->y + q->z * q->z + q->w * q->w > 0.5f) {
+        struct VRTextureWithPose_t tp;
+        tp.handle = tex.handle;
+        tp.eType = tex.eType;
+        tp.eColorSpace = tex.eColorSpace;
+        HmdMatrix34_t eye_world = matrix_from_pose(render_pose);
+        HmdMatrix34_t eye_to_head = g_system->GetEyeToHeadTransform((EVREye)eye);
+        HmdMatrix34_t head_to_eye = matrix_inverse_rigid(&eye_to_head);
+        tp.mDeviceToAbsoluteTracking = matrix_mul(&eye_world, &head_to_eye);
+        EVRCompositorError e = g_compositor->Submit(
+            (EVREye)eye, (struct Texture_t *)&tp, &bounds,
+            EVRSubmitFlags_Submit_TextureWithPose);
+        if (e == EVRCompositorError_VRCompositorError_None)
+            return true;
+        static int warned;
+        if (warned++ < 3)
+            LOG("compositor Submit(eye %d, with pose) failed: %d; retrying without",
+                (int)eye, (int)e);
+    }
     EVRCompositorError e = g_compositor->Submit((EVREye)eye, &tex, &bounds,
                                                 EVRSubmitFlags_Submit_Default);
     if (e != EVRCompositorError_VRCompositorError_None)

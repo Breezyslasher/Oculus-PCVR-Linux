@@ -851,7 +851,10 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 vMin = 1.0f - vMin;
                 vMax = 1.0f - vMax;
             }
-            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax))
+            /* EyeMatrix layers keep their RenderPose elsewhere; only use it
+             * from EyeFov / EyeFovDepth. */
+            const ovrPosef *pose = h->Type != 5 ? &l->RenderPose[eye] : NULL;
+            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax, pose))
                 submitted++;
         }
     }
