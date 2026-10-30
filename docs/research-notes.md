@@ -30,10 +30,82 @@ file as things get confirmed or disproved on real games.
   Known gap: callers that get `LoadLibrary*` through `GetProcAddress` are
   not redirected.
 
+### First real game: Spider-Man: Homecoming VR (Unreal Engine 4, 2017)
+
+- No Oculus DLLs in the game folder. The LibOVR loader is built into
+  `SMHCVR/Binaries/Win64/SMHCVR-Win64-Shipping.exe`, and so is the Platform
+  SDK loader. It formats `%lsLibOVRRT%hs_%d.dll` and
+  `%lsLibOVRPlatform%hs_%d.dll` with a directory prefix, so **Unreal loads
+  the Platform SDK from the Oculus install, not the game folder.**
+- Injection under Proton 10 works: the shim loads in the game and installs
+  its redirect, and DXVK starts. But the runtime was never requested, and
+  the game exited with code 3.
+- Cause: before touching LibOVR, Unreal's Oculus plugin opens the named event
+  `OculusHMDConnected` (created by the Oculus service, signaled while a
+  headset is attached). Without it, the plugin treats Oculus as not
+  installed. The shim now creates that event at startup (signaled by
+  default; `OVRSTUB_HMD_CONNECTED=0` to leave it unsignaled), the same idea
+  as Revive's `OpenEventW` hook. The redirect also covers
+  `LibOVRPlatform64_1.dll`, and `ovrl prefix-setup` installs the Platform
+  stub next to the shim.
+
+- After that, the game still crashed at startup, with or without the shim:
+  `0xC06D007E`, delay-load of **`openvr_api.dll`** (`VR_InitInternal`),
+  found with `tools/minidump_info.py`. UE 4.14 builds in the SteamVR plugin
+  even for Oculus Store builds but doesn't ship `openvr_api.dll`. Under
+  Proton SteamVR looks installed, so the plugin calls into the missing DLL.
+  Launching with **`-hmd=OculusRift`** avoids it; the game then runs (black
+  screen, since no HMD is reported) and exits cleanly.
+- It still never loaded the runtime: a `+reg,+file` trace showed no read
+  of the Oculus registry key and no attempt to open LibOVRRT. The exe
+  contains the ASCII string **`LIBOVR_DLL_DIR`**: the loader takes the runtime
+  folder from that environment variable (prefixed directly onto
+  `LibOVRRT64_1.dll`, so it needs a trailing backslash). `ovrl launch` now
+  sets it to the shim's folder. The wide string `Oculus VR, LLC` in the exe
+  is probably the signer name for the runtime signature check; whether that
+  check blocks our unsigned DLL is the next thing to find out.
+
+- With `LIBOVR_DLL_DIR` set and the HMD event present, the game searched for
+  a **bare `LibOVRRT64_1.dll`** on the standard DLL search path (exe folder,
+  cwd, system dirs, PATH) and never looked in the `LIBOVR_DLL_DIR` folder.
+  Putting the stubs **next to the game exe** got them found: the trace then
+  showed the game `CreateFileW`-opening both stubs.
+- But it opened the files without loading them: the loaders call
+  **`WinVerifyTrust`** on the DLL first and only load it if signed. Our
+  unsigned stubs returned `TRUST_E_NOSIGNATURE` (0x800B0100). The shim now
+  hooks `WinVerifyTrust` (via a `GetProcAddress` hook, since the game resolves
+  wintrust at run time) and reports success for our two stub file names only;
+  all other files verify normally. `OVRSTUB_FAKE_SIGNATURE=0` disables it.
+  Loaders that also compare the signer name/thumbprint against Meta's real
+  cert would still reject it; the sigcheck trace shows what each game calls.
+- Confirmed on Spider-Man: Homecoming VR that this is not enough. With the
+  `WinVerifyTrust` hook in place the Platform stub loads, but the runtime is
+  still only `CreateFileW`-opened, never `LoadLibrary`-ed: the game's LibOVR
+  loader reads the file's embedded code-signing certificate and checks that
+  the publisher is Meta (the `Oculus VR, LLC` string), which our stub cannot
+  satisfy.
+
+  **Design decision: do not fabricate Meta's signing identity.** Making the
+  stub present a certificate that claims to be signed by "Oculus VR, LLC"
+  would mean forging a vendor's code-signing credentials, which this project
+  will not do, even for games the user owns. The supported path is Revive's:
+  the user supplies Meta's own freely-distributed, genuinely signed
+  `LibOVRRT64_1.dll` (from the Meta PC runtime). That real file sits on disk
+  so the game's authenticity check passes against a legitimate Meta binary,
+  and our existing `LoadLibrary` redirect swaps our implementation in at load
+  time, so none of Meta's service-dependent code runs. This keeps the
+  authenticity check meaningful (it is validating a real Meta file) instead
+  of defeating it. `ovrl stubs install --real-runtime <LibOVRRT64_1.dll>`
+  does this: it places the user-supplied genuine runtime next to the exe
+  (our stubs carry an `OVRSTUB-BUILD-MARKER-v1` marker so a real file is
+  never mistaken for one of ours), and the injected shim's redirect swaps
+  our implementation in at load.
+
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 
-- Ships inside each game's folder, so the stub can just replace it there
-  (`ovrl stubs install`).
+- Unity games ship it in the game folder, so the stub can replace it there
+  (`ovrl stubs install`). Unreal games load it from the Oculus install
+  instead (see above), where `ovrl prefix-setup` puts the stub.
 - Unity games call it through the C# `Oculus.Platform` wrapper (`DllImport`,
   bound lazily per function), so a missing export only fails when that
   function is called. Native games link an import library, so a missing export
@@ -75,6 +147,27 @@ store.**
   their segments concatenated in manifest order.
 - The original Milestone 1 idea, `ovr-platform-util`, isn't needed for this
   path. It stays a fallback if the CDN route stops working.
+
+## Rendering backend (Milestone 3)
+
+Implemented in `src/libovr/vr_backend.c` (OpenVR wrapper) and
+`swapchain_d3d.c` (D3D11 swap chains); wired through `libovr_stub.c`.
+
+- Uses OpenVR's C "FnTable" API via `third_party/openvr/openvr_capi.h` (BSD).
+  `openvr_api.dll` is loaded at runtime from the prefix (SteamVR / Proton's
+  bridge provides it); absent => fall back to the no-HMD path.
+- `ovr_Create` -> `VR_InitInternal(Scene)` + IVRSystem_026 / IVRCompositor_029.
+- Head/eye poses: OpenVR 3x4 row-major rigid transforms -> `ovrPosef`
+  (both APIs are right-handed, Y-up, -Z-forward, so no axis flip). FOV from
+  `GetProjectionRaw`, render size from `GetRecommendedRenderTargetSize`.
+- Swap chains are real `ID3D11Texture2D` rings on the game's device, created
+  `D3D11_RESOURCE_MISC_SHARED` so SteamVR's out-of-process compositor can
+  read them (retried without SHARED if a format rejects it). `ovr_SubmitFrame`
+  blocks on `WaitGetPoses`, then `Submit`s each eye's committed texture with
+  UV bounds derived from the layer viewport, then `PostPresentHandoff`.
+- **Untested on hardware.** The D3D11->Vulkan path under DXVK and the
+  shared-texture submit to SteamVR's compositor are the parts most likely to
+  need iteration. GL/Vulkan swap chains are not implemented yet (D3D11 only).
 
 ## LibOVR ABI
 

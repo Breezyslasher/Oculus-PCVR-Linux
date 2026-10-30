@@ -28,6 +28,10 @@
 #define EXPORT __declspec(dllexport)
 #define LOG(...) stub_log("ovr-platform", __VA_ARGS__)
 
+/* Lets `ovrl` recognize our own stub DLLs and never mistake one for a
+ * game's genuine file (e.g. when backing up before install). */
+EXPORT const char ovrstub_build_marker[] = "OVRSTUB-BUILD-MARKER-v1";
+
 struct stub_user {
     ovrID id;
     char oculus_id[64];

@@ -11,17 +11,33 @@
  * resolve its full symbol table; since no session is ever created they just
  * fail with ovrError_InvalidSession or return zeroed structs.
  */
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
 #include "../common/log.h"
 #include "iat_hook.h"
 #include "ovr_types.h"
+#include "sigcheck.h"
+#include "swapchain_d3d.h"
+#include "vr_backend.h"
+
+/* The one opaque session object. OpenVR is a process-wide singleton, so a
+ * single session is enough and a game only ever creates one. */
+struct ovrHmdStruct {
+    int active;
+};
+static struct ovrHmdStruct g_hmd;
 
 #define EXPORT __declspec(dllexport)
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
 
+/* Lets `ovrl` recognize our own stub DLLs and never mistake one for a
+ * game's genuine file (e.g. when backing up before install). */
+EXPORT const char ovrstub_build_marker[] = "OVRSTUB-BUILD-MARKER-v1";
+
 static ovrErrorInfo g_last_error;
+static HANDLE g_hmd_event;
 static int g_initialized;
 static LARGE_INTEGER g_qpc_freq;
 
@@ -78,32 +94,66 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     ovrHmdDesc desc;
     (void)session;
     memset(&desc, 0, sizeof(desc));
-    desc.Type = ovrHmd_None;
+    if (!vr_backend_active()) {
+        desc.Type = ovrHmd_None;
+        return desc;
+    }
+    desc.Type = ovrHmd_CV1;
+    strcpy(desc.ProductName, "Oculus Rift via ovrstub");
+    strcpy(desc.Manufacturer, "ovrstub");
+    desc.DefaultEyeFov[ovrEye_Left] = desc.MaxEyeFov[ovrEye_Left] =
+        vr_backend_fov(ovrEye_Left);
+    desc.DefaultEyeFov[ovrEye_Right] = desc.MaxEyeFov[ovrEye_Right] =
+        vr_backend_fov(ovrEye_Right);
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    desc.Resolution.w = w * 2;   /* both eyes side by side */
+    desc.Resolution.h = h;
+    desc.DisplayRefreshRate = 90.0f;
+    desc.AvailableHmdCaps = desc.DefaultHmdCaps = 0;
+    desc.AvailableTrackingCaps = desc.DefaultTrackingCaps = 0;
     return desc;
 }
 
 EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 {
-    (void)luid;
+    if (luid)
+        memset(luid, 0, sizeof(*luid));
     if (session)
         *session = NULL;
     if (!g_initialized)
         return set_error(ovrError_NotInitialized, "ovr_Initialize not called");
-    LOG("ovr_Create -> ovrError_NoHmd");
-    return set_error(ovrError_NoHmd, "No HMD (ovrstub milestone 2)");
+    if (!vr_backend_init()) {
+        LOG("ovr_Create -> ovrError_NoHmd (no SteamVR backend)");
+        return set_error(ovrError_NoHmd, "No HMD / SteamVR not available");
+    }
+    g_hmd.active = 1;
+    if (session)
+        *session = &g_hmd;
+    LOG("ovr_Create -> session via OpenVR");
+    return ovrSuccess;
 }
 
 EXPORT void ovr_Destroy(ovrSession session)
 {
-    (void)session;
+    if (session == &g_hmd) {
+        g_hmd.active = 0;
+        vr_backend_shutdown();
+        LOG("ovr_Destroy");
+    }
 }
 
 EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *status)
 {
-    (void)session;
-    if (status)
-        memset(status, 0, sizeof(*status));
-    return set_error(ovrError_InvalidSession, "no session");
+    if (!status)
+        return set_error(ovrError_InvalidParameter, "null status");
+    memset(status, 0, sizeof(*status));
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    status->IsVisible = ovrTrue;
+    status->HmdPresent = ovrTrue;
+    status->HmdMounted = ovrTrue;
+    return ovrSuccess;
 }
 
 EXPORT unsigned ovr_GetTrackerCount(ovrSession session)
@@ -132,11 +182,131 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
                                              ovrBool latencyMarker)
 {
     ovrTrackingState s;
-    (void)session; (void)absTime; (void)latencyMarker;
+    (void)absTime; (void)latencyMarker;
     memset(&s, 0, sizeof(s));
     s.HeadPose.ThePose.Orientation.w = 1.0f;
     s.CalibratedOrigin.Orientation.w = 1.0f;
+    if (session == &g_hmd && vr_backend_active()) {
+        s.HeadPose = vr_backend_head_pose();
+        s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
+    }
     return s;
+}
+
+/* Exports some SDK versions require in their symbol table (Meta's loader
+ * unloads the runtime if any is missing). Minimal, safe behavior. */
+
+EXPORT ovrResult ovr_Lookup(const char *name, void **data)
+{
+    LOG("ovr_Lookup(%s)", name ? name : "(null)");
+    if (data)
+        *data = NULL;
+    return ovrError_Unsupported;
+}
+
+EXPORT unsigned ovr_GetEnabledCaps(ovrSession session)
+{
+    (void)session;
+    return 0;
+}
+
+EXPORT void ovr_SetEnabledCaps(ovrSession session, unsigned caps)
+{
+    (void)session; (void)caps;
+}
+
+EXPORT unsigned ovr_GetTrackingCaps(ovrSession session)
+{
+    (void)session;
+    return 0;
+}
+
+EXPORT ovrTrackingState ovr_GetTrackingStateWithSensorData(ovrSession session,
+                                                           double absTime,
+                                                           ovrBool latencyMarker,
+                                                           ovrSensorData *sensor)
+{
+    if (sensor)
+        memset(sensor, 0, sizeof(*sensor));
+    return ovr_GetTrackingState(session, absTime, latencyMarker);
+}
+
+EXPORT ovrResult ovr_GetExternalCameras(ovrSession session, void *cameras,
+                                        unsigned *inoutCameraCount)
+{
+    (void)session; (void)cameras;
+    if (inoutCameraCount)
+        *inoutCameraCount = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SetExternalCameraProperties(ovrSession session, const char *name,
+                                                 const void *intrinsics,
+                                                 const void *extrinsics)
+{
+    (void)session; (void)name; (void)intrinsics; (void)extrinsics;
+    return ovrSuccess;
+}
+
+/* Audio device queries: report the system default (WAVE_MAPPER / empty). */
+EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(ovrSession session, unsigned *deviceOutId)
+{
+    (void)session;
+    if (deviceOutId)
+        *deviceOutId = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInWaveId(ovrSession session, unsigned *deviceInId)
+{
+    (void)session;
+    if (deviceInId)
+        *deviceInId = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(ovrSession session, wchar_t *buffer)
+{
+    (void)session;
+    if (buffer)
+        buffer[0] = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(ovrSession session, wchar_t *buffer)
+{
+    (void)session;
+    if (buffer)
+        buffer[0] = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceOutGuid(ovrSession session, GUID *guid)
+{
+    (void)session;
+    if (guid)
+        memset(guid, 0, sizeof(*guid));
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInGuid(ovrSession session, GUID *guid)
+{
+    (void)session;
+    if (guid)
+        memset(guid, 0, sizeof(*guid));
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SetSynchronizationQueueVk(ovrSession session, void *queue)
+{
+    (void)session; (void)queue;
+    return ovrSuccess;
+}
+
+/* Misspelled variant that shipped in some SDK versions. */
+EXPORT ovrResult ovr_SetSynchonizationQueueVk(ovrSession session, void *queue)
+{
+    return ovr_SetSynchronizationQueueVk(session, queue);
 }
 
 EXPORT ovrTouchHapticsDesc ovr_GetTouchHapticsDesc(ovrSession session, int type)
@@ -159,7 +329,14 @@ EXPORT ovrSizei ovr_GetFovTextureSize(ovrSession session, ovrEyeType eye,
                                       ovrFovPort fov, float pixelsPerDisplayPixel)
 {
     ovrSizei s = {0, 0};
-    (void)session; (void)eye; (void)fov; (void)pixelsPerDisplayPixel;
+    (void)session; (void)eye; (void)fov;
+    if (vr_backend_active()) {
+        int w, h;
+        vr_backend_render_target_size(&w, &h);
+        float scale = pixelsPerDisplayPixel > 0.0f ? pixelsPerDisplayPixel : 1.0f;
+        s.w = (int)(w * scale);
+        s.h = (int)(h * scale);
+    }
     return s;
 }
 
@@ -171,6 +348,14 @@ EXPORT ovrEyeRenderDescV1 ovr_GetRenderDesc(ovrSession session, ovrEyeType eye,
     memset(&d, 0, sizeof(d));
     d.Eye = eye;
     d.Fov = fov;
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    d.DistortedViewport.Size.w = w;
+    d.DistortedViewport.Size.h = h;
+    if (vr_backend_active()) {
+        ovrPosef p = vr_backend_eye_pose(eye);
+        d.HmdToEyeOffset = p.Position;  /* pre-1.17 used an offset vector */
+    }
     return d;
 }
 
@@ -183,6 +368,12 @@ EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
     d.Eye = eye;
     d.Fov = fov;
     d.HmdToEyePose.Orientation.w = 1.0f;
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    d.DistortedViewport.Size.w = w;
+    d.DistortedViewport.Size.h = h;
+    if (vr_backend_active())
+        d.HmdToEyePose = vr_backend_eye_pose(eye);
     return d;
 }
 
@@ -211,27 +402,234 @@ NO_SESSION(ovr_GetBoundaryGeometry)
 NO_SESSION(ovr_GetBoundaryDimensions)
 NO_SESSION(ovr_GetBoundaryVisible)
 NO_SESSION(ovr_RequestBoundaryVisible)
-NO_SESSION(ovr_GetTextureSwapChainLength)
-NO_SESSION(ovr_GetTextureSwapChainCurrentIndex)
-NO_SESSION(ovr_GetTextureSwapChainDesc)
-NO_SESSION(ovr_CommitTextureSwapChain)
-NO_SESSION(ovr_CreateTextureSwapChainDX)
-NO_SESSION(ovr_GetTextureSwapChainBufferDX)
-NO_SESSION(ovr_CreateMirrorTextureDX)
-NO_SESSION(ovr_CreateMirrorTextureWithOptionsDX)
-NO_SESSION(ovr_GetMirrorTextureBufferDX)
 NO_SESSION(ovr_CreateTextureSwapChainGL)
 NO_SESSION(ovr_GetTextureSwapChainBufferGL)
 NO_SESSION(ovr_CreateMirrorTextureGL)
 NO_SESSION(ovr_CreateMirrorTextureWithOptionsGL)
 NO_SESSION(ovr_GetMirrorTextureBufferGL)
-NO_SESSION(ovr_WaitToBeginFrame)
-NO_SESSION(ovr_BeginFrame)
-NO_SESSION(ovr_EndFrame)
-NO_SESSION(ovr_SubmitFrame)
-NO_SESSION(ovr_SubmitFrame2)
 NO_SESSION(ovr_GetPerfStats)
 NO_SESSION(ovr_ResetPerfStats)
+
+/* ---- D3D11 texture swap chains, mirror, and frame submission (3b) ------- */
+
+EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevice,
+                                              const ovrTextureSwapChainDesc *desc,
+                                              ovrTextureSwapChain *out)
+{
+    if (out)
+        *out = NULL;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    if (!d3dDevice || !desc || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    ovrTextureSwapChain c = swapchain_d3d_create(d3dDevice, desc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "swap chain creation failed");
+    *out = c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainLength(ovrSession session,
+                                               ovrTextureSwapChain chain, int *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    *out = swapchain_d3d_length(chain);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainCurrentIndex(ovrSession session,
+                                                     ovrTextureSwapChain chain, int *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    *out = swapchain_d3d_current_index(chain);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainDesc(ovrSession session,
+                                             ovrTextureSwapChain chain,
+                                             ovrTextureSwapChainDesc *out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    int w, h;
+    swapchain_d3d_size(chain, &w, &h);
+    memset(out, 0, sizeof(*out));
+    out->Width = w;
+    out->Height = h;
+    out->ArraySize = 1;
+    out->MipLevels = 1;
+    out->SampleCount = 1;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainBufferDX(ovrSession session,
+                                                 ovrTextureSwapChain chain, int index,
+                                                 const void *iid, void **out)
+{
+    (void)session;
+    if (!chain || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    void *buf = swapchain_d3d_buffer(chain, index, iid);
+    if (!buf)
+        return set_error(ovrError_InvalidParameter, "bad swap chain buffer");
+    *out = buf;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_CommitTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
+{
+    (void)session;
+    if (!chain)
+        return set_error(ovrError_InvalidParameter, "null chain");
+    swapchain_d3d_commit(chain);
+    return ovrSuccess;
+}
+
+EXPORT void ovr_DestroyTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
+{
+    (void)session;
+    swapchain_d3d_destroy(chain);
+}
+
+/* Mirror textures (the desktop preview) are optional for VR output; create a
+ * plain texture so the game's calls succeed, but nothing is drawn into it. */
+EXPORT ovrResult ovr_CreateMirrorTextureDX(ovrSession session, void *d3dDevice,
+                                           const ovrMirrorTextureDesc *desc,
+                                           ovrMirrorTexture *out)
+{
+    if (out)
+        *out = NULL;
+    if (session != &g_hmd || !d3dDevice || !desc || !out)
+        return set_error(ovrError_InvalidParameter, "mirror: bad arg");
+    ovrTextureSwapChainDesc sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.Format = desc->Format;
+    sc.Width = desc->Width;
+    sc.Height = desc->Height;
+    sc.ArraySize = 1;
+    sc.MipLevels = 1;
+    sc.SampleCount = 1;
+    sc.BindFlags = ovrTextureBind_DX_RenderTarget;
+    sc.StaticImage = ovrTrue;
+    ovrTextureSwapChain c = swapchain_d3d_create(d3dDevice, &sc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "mirror creation failed");
+    *out = (ovrMirrorTexture)c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_CreateMirrorTextureWithOptionsDX(ovrSession session, void *d3dDevice,
+                                                      const ovrMirrorTextureDesc *desc,
+                                                      ovrMirrorTexture *out)
+{
+    return ovr_CreateMirrorTextureDX(session, d3dDevice, desc, out);
+}
+
+EXPORT ovrResult ovr_GetMirrorTextureBufferDX(ovrSession session, ovrMirrorTexture mirror,
+                                              const void *iid, void **out)
+{
+    (void)session;
+    if (!mirror || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    void *buf = swapchain_d3d_buffer((ovrTextureSwapChain)mirror, 0, iid);
+    if (!buf)
+        return set_error(ovrError_InvalidParameter, "bad mirror buffer");
+    *out = buf;
+    return ovrSuccess;
+}
+
+/* Submit one frame's layers to the compositor and present. We handle the
+ * EyeFov layer (what head-mounted rendering uses); others are ignored. The
+ * caller has already blocked for render poses (via begin_frame). */
+static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
+{
+    int submitted = 0;
+    for (unsigned i = 0; i < count; i++) {
+        const ovrLayerHeader *h = layers ? layers[i] : NULL;
+        if (!h || h->Type != ovrLayerType_EyeFov)
+            continue;
+        const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
+        for (int eye = 0; eye < ovrEye_Count; eye++) {
+            ovrTextureSwapChain chain = l->ColorTexture[eye]
+                ? l->ColorTexture[eye] : l->ColorTexture[0];
+            if (!chain)
+                continue;
+            void *tex = swapchain_d3d_submit_texture(chain);
+            int w, h2;
+            swapchain_d3d_size(chain, &w, &h2);
+            /* Normalize the eye's viewport into texture UV bounds. */
+            ovrRecti vp = l->Viewport[eye];
+            float uMin = w ? (float)vp.Pos.x / w : 0.0f;
+            float vMin = h2 ? (float)vp.Pos.y / h2 : 0.0f;
+            float uMax = w ? (float)(vp.Pos.x + vp.Size.w) / w : 1.0f;
+            float vMax = h2 ? (float)(vp.Pos.y + vp.Size.h) / h2 : 1.0f;
+            if (vp.Size.w == 0 || vp.Size.h == 0) {
+                uMin = vMin = 0.0f;
+                uMax = vMax = 1.0f;
+            }
+            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax))
+                submitted++;
+        }
+    }
+    vr_backend_present();
+    return submitted ? ovrSuccess
+        : set_error(ovrSuccess_NotVisible, "no eye layer submitted");
+}
+
+EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
+                                 const ovrViewScaleDesc *viewScaleDesc,
+                                 const ovrLayerHeader *const *layerPtrList,
+                                 unsigned layerCount)
+{
+    (void)frameIndex; (void)viewScaleDesc;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    /* Old single-call frame model: block for poses, submit, present. */
+    vr_backend_begin_frame();
+    return submit_layers(layerPtrList, layerCount);
+}
+
+EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
+                                  const ovrViewScaleDesc *viewScaleDesc,
+                                  const ovrLayerHeader *const *layerPtrList,
+                                  unsigned layerCount)
+{
+    return ovr_SubmitFrame(session, frameIndex, viewScaleDesc, layerPtrList, layerCount);
+}
+
+EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
+{
+    (void)frameIndex;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    return vr_backend_begin_frame() ? ovrSuccess
+        : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
+}
+
+EXPORT ovrResult ovr_BeginFrame(ovrSession session, long long frameIndex)
+{
+    (void)frameIndex;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
+                              const ovrViewScaleDesc *viewScaleDesc,
+                              const ovrLayerHeader *const *layerPtrList,
+                              unsigned layerCount)
+{
+    (void)frameIndex; (void)viewScaleDesc;
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
+    return submit_layers(layerPtrList, layerCount);
+}
 
 EXPORT int ovr_GetTrackingOriginType(ovrSession session)
 {
@@ -250,14 +648,10 @@ EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
     return 0;
 }
 
-EXPORT void ovr_DestroyTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
-{
-    (void)session; (void)chain;
-}
-
 EXPORT void ovr_DestroyMirrorTexture(ovrSession session, ovrMirrorTexture tex)
 {
-    (void)session; (void)tex;
+    (void)session;
+    swapchain_d3d_destroy((ovrTextureSwapChain)tex);
 }
 
 /* ---- Timing ------------------------------------------------------------ */
@@ -339,6 +733,25 @@ EXPORT ovrBool ovr_SetString(ovrSession s, const char *name, const char *v)
     return ovrFalse;
 }
 
+/*
+ * The Oculus service creates a named event, "OculusHMDConnected", and signals
+ * it while a headset is attached. Unreal's Oculus plugin opens it before
+ * touching LibOVR: no event means "Oculus isn't installed", so the runtime is
+ * never loaded. We create it ourselves, signaled unless OVRSTUB_HMD_CONNECTED=0.
+ * The handle stays open for the life of the process.
+ */
+static void create_hmd_connected_event(void)
+{
+    const char *v = getenv("OVRSTUB_HMD_CONNECTED");
+    BOOL connected = !(v && v[0] == '0');
+    g_hmd_event = CreateEventW(NULL, TRUE, connected, L"OculusHMDConnected");
+    if (!g_hmd_event)
+        LOG("could not create OculusHMDConnected event (error %lu)", GetLastError());
+    else
+        LOG("OculusHMDConnected event created (%s)",
+            connected ? "signaled: HMD present" : "not signaled: no HMD");
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -346,6 +759,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(inst);
         QueryPerformanceFrequency(&g_qpc_freq);
         LOG("loaded (no-HMD stub)");
+        create_hmd_connected_event();
+        sigcheck_install();
         redirect_install(inst);
     }
     return TRUE;

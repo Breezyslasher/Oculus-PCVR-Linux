@@ -5,13 +5,14 @@ without the Oculus PC app. See [docs/PLAN.md](docs/PLAN.md) for the full plan
 and [docs/research-notes.md](docs/research-notes.md) for what has been
 confirmed so far.
 
-**Status: early.** The Milestone 2 pieces build and pass smoke tests under
-Wine. They have not been tried on a real game yet.
+**Status: early, in active bring-up.** Milestones 1-2 work on real games
+(download, injection, stubs, signature handling). Milestone 3 (OpenVR-backed
+rendering to the headset) is newly implemented and untested on hardware.
 
 | Piece | Path | State |
 |-------|------|-------|
 | Platform SDK stub (`LibOVRPlatform64_1.dll`) | `src/platform` | Init, entitlement (always passes), logged-in user, message queue. Message type IDs unverified. |
-| LibOVR shim (`LibOVRRT64_1.dll`) | `src/libovr` | "Runtime present, no HMD": `ovr_Create` returns `ovrError_NoHmd`. Redirects the game's runtime load to itself. |
+| LibOVR shim (`LibOVRRT64_1.dll`) | `src/libovr` | Bridges LibOVR to OpenVR (SteamVR): session, HMD description, tracking, D3D11 swap chains and frame submission. Falls back to "no HMD" when SteamVR is absent. Redirects the game's runtime load; answers the signature check. |
 | Injector (`ovrinject.exe`) | `src/injector` | Starts the game suspended and loads the shim before game code runs. |
 | Launcher (`ovrl`) | `launcher/` | Store login, owned-app list, build list and resumable Rift downloads (untested against the live store). Stub install/restore, prefix setup, launch, DLL export diff. |
 
@@ -86,51 +87,105 @@ again. `OVRL_TOKEN=... ovrl ...` also works without saving the token.
 
 ## Try it on a game (Milestone 2: boot to menu)
 
-Assumes the game is already downloaded (see above) and has a Proton prefix, e.g. after adding the exe to Steam as a
-non-Steam game and launching it once.
+Assumes the game is already downloaded (see above) and has a Proton prefix,
+e.g. after adding the exe to Steam as a non-Steam game and launching it once,
+or by creating one as below.
 
 ```sh
+GAME=/path/to/Game/Binaries/Win64        # the folder with the real game exe
+P=~/.local/share/ovrl/prefixes/mygame    # a Proton compatdata dir
+PROTON=~/.steam/steam/steamapps/common/"Proton 10.0"
+
 cd launcher
-# Swap in the Platform stub (keeps a backup as *.ovrl-orig)
-python3 -m ovrl stubs install "/path/to/Game"
+# Put the stubs next to the game exe (keeps backups as *.ovrl-orig). The
+# LibOVR loader searches the exe folder for a bare LibOVRRT64_1.dll.
+#
+# Many games verify the runtime is signed by Meta before loading it. For
+# those, pass Meta's own genuine signed LibOVRRT64_1.dll (from a Meta PC
+# runtime install) so the check passes against a real file; the injected
+# shim still swaps our implementation in at load, so no Meta service runs:
+python3 -m ovrl stubs install "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dll
+# If the game also checks the Platform SDK's signature, add its real file too:
+#   ... --real-platform /path/to/real/LibOVRPlatform64_1.dll
+# Games without the check work with just:
+#   python3 -m ovrl stubs install "$GAME"
 
-# Put the LibOVR shim into the prefix and register a fake Oculus install
-python3 -m ovrl prefix-setup ~/.steam/steam/steamapps/compatdata/<id> \
-    --wine ~/.steam/steam/steamapps/common/"Proton - Experimental"/files/bin/wine64
+# Install the shim into the prefix and register a fake Oculus install
+python3 -m ovrl prefix-setup "$P" --wine "$PROTON/files/bin/wine"
 
-# Launch through the injector
-python3 -m ovrl launch ~/.steam/steam/steamapps/compatdata/<id> \
-    --proton ~/.steam/steam/steamapps/common/"Proton - Experimental" \
-    "/path/to/Game/Game.exe"
+# Launch through the injector. Unreal games also need -hmd=OculusRift so the
+# engine skips its built-in SteamVR plugin (whose openvr_api.dll is absent).
+python3 -m ovrl launch "$P" --proton "$PROTON" "$GAME/Game.exe" -hmd=OculusRift
 
-# Undo the Platform stub
-python3 -m ovrl stubs restore "/path/to/Game"
+# Undo the stubs
+python3 -m ovrl stubs restore "$GAME"
 ```
 
 Logs go to stderr and to `ovrstub.log` next to the game exe (or wherever
-`OVRSTUB_LOG` points). If a game ignores the entitlement reply, the message
-type IDs are the likely cause. See the research notes for how to check them.
+`OVRSTUB_LOG` points). The `[libovr-trace]` lines show which Oculus files,
+events and env vars the game looks for, which is the first place to look when
+a new game doesn't reach its menu.
 
-### Stub environment variables
+## See it in the headset (Milestone 3: launch through Steam)
 
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `OVRSTUB_USER_ID` | `1` | User ID reported to the game |
-| `OVRSTUB_USER_NAME` | `LinuxPlayer` | Oculus ID / display name |
-| `OVRSTUB_LOCALE` | `en_US` | `ovr_GetLoggedInUserLocale` |
-| `OVRSTUB_MSGTYPE_ENTITLEMENT`, `..._USER_GET_LOGGED_IN_USER`, `..._USER_GET`, `..._PLATFORM_INITIALIZE_WINDOWS_ASYNC` | see `platform_types.h` | Override a message type ID |
-| `OVRSTUB_LOG` | unset | Also append logs to this file |
+`ovrl launch` runs the game under a bare `proton run`, which is enough to
+reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
+runtime environment that points it at the native Linux SteamVR server — so
+VR init fails and you get a black screen. Steam sets that environment up for
+anything it launches. The simplest fix is therefore to let Steam drive the
+launch: add the game as a non-Steam game and point its shortcut at our
+injector.
+
+```sh
+GAME=/path/to/Game/Binaries/Win64/Game.exe   # the real game exe
+
+cd launcher
+# Stage everything next to the exe: the genuine runtime for the signature
+# check, our shim (as ovrstub_shim.dll), the injector, and openvr_api.dll.
+python3 -m ovrl steam-setup "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dll
+# --real-platform, --openvr and --hmd work as for the commands above.
+```
+
+Then write the Steam shortcut the way Heroic does — straight into Steam's
+config, no dialogs. **Quit Steam fully first** (it rewrites its config on
+exit, which would discard the change):
+
+```sh
+python3 -m ovrl add-to-steam "$GAME" --name "Spider-Man Homecoming VR"
+```
+
+This adds the entry to `userdata/<you>/config/shortcuts.vdf` (flagged as a VR
+app) and forces Proton for it in `config/config.vdf`, reusing whichever
+Proton your other games already map to (`--proton-tool` overrides). Both files
+are backed up as `*.ovrl-bak` and must round-trip through the parser before
+they are touched, so a surprise in Steam's format aborts rather than losing
+your other shortcuts. Start Steam and the game is in your library.
+
+If you'd rather use the Steam UI, `steam-setup` printed the exact settings:
+**Add a Non-Steam Game**, browse to `ovrinject.exe` in the game folder, then
+in its **Properties**:
+
+- **Target** stays `ovrinject.exe`, **Start In** the game folder (Steam fills
+  this in when you browse to the exe).
+- **Launch Options**: paste the printed line, e.g.
+  `OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "Game.exe" -hmd=OculusRift`
+- **Compatibility**: force the same Proton version you use elsewhere.
+
+Start SteamVR, then launch the entry from your library. Steam wires up the VR
+bridge, Proton loads our shim through the injector, and the shim renders the
+game through SteamVR. Undo with `ovrl stubs restore "$(dirname "$GAME")"`.
 
 ## Layout
 
 ```
 src/common/     logging shared by the DLLs
 src/platform/   LibOVRPlatform64_1.dll stub
-src/libovr/     LibOVRRT64_1.dll shim + LoadLibrary redirect
+src/libovr/     LibOVRRT64_1.dll shim: LoadLibrary redirect, GetProcAddress hook, WinVerifyTrust (sigcheck.c)
 src/injector/   ovrinject.exe
 tests/          Windows-side smoke tests (run under Wine by `make check`)
 launcher/ovrl/  Python launcher CLI (store.py: Meta API, download.py: CDN downloader)
 launcher/tests/ launcher tests against a local fake store/CDN
+tools/          debugging helpers (minidump_info.py: summarize a crash dump)
 docs/           plan and research notes
 ```
 
