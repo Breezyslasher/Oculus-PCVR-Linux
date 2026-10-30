@@ -27,6 +27,10 @@ PLATFORM_DLL = "LibOVRPlatform64_1.dll"
 RUNTIME_DLL = "LibOVRRT64_1.dll"
 INJECTOR = "ovrinject.exe"
 BACKUP_SUFFIX = ".ovrl-orig"
+# The shim is injected under its own name so it never overwrites the genuine
+# LibOVRRT64_1.dll that the game's signature check reads from disk.
+SHIM_INJECT_NAME = "ovrstub_shim.dll"
+OPENVR_DLL = "openvr_api.dll"
 
 # Both stub DLLs embed this marker (see the stub sources), so we can tell our
 # own build apart from a game's genuine file.
@@ -70,6 +74,58 @@ def _wine_prefix(prefix: Path) -> Path:
     return prefix / "pfx" if (prefix / "pfx").is_dir() else prefix
 
 
+def _install_file(src: Path, target: Path, label: str) -> None:
+    """Copy src to target, backing up any pre-existing non-ours file first."""
+    backup = target.with_name(target.name + BACKUP_SUFFIX)
+    if target.exists() and not backup.exists() and not _is_our_stub(target):
+        shutil.copy2(target, backup)
+        print(f"backed up original to {backup}")
+    shutil.copy2(src, target)
+    print(f"installed {label} {target}")
+
+
+def _install_stubs(game_dir: Path, build: Path,
+                   real_runtime: str | None, real_platform: str | None) -> None:
+    # The game's LibOVR loader often verifies a DLL is Meta-signed before
+    # loading it. With a real runtime/platform we place Meta's own genuine
+    # signed DLL here so that check passes against a real file; the injected
+    # shim's LoadLibrary redirect still swaps our implementation in at load,
+    # so Meta's service code never runs. When no real file is given for a
+    # slot, our stub is installed there.
+    real = {RUNTIME_DLL: real_runtime, PLATFORM_DLL: real_platform}
+    for name in (RUNTIME_DLL, PLATFORM_DLL):
+        is_real = bool(real[name])
+        src = _check_real_dll(Path(real[name]), name) if is_real \
+            else _build_file(build, name)
+        _install_file(src, game_dir / name, "real " + name if is_real else "stub")
+
+
+def _restore_dir(game_dir: Path) -> bool:
+    """Undo stubs/steam-setup in a game folder; return whether anything changed."""
+    restored = False
+    for name in (RUNTIME_DLL, PLATFORM_DLL, OPENVR_DLL):
+        target = game_dir / name
+        backup = game_dir / (name + BACKUP_SUFFIX)
+        if backup.exists():
+            shutil.move(str(backup), str(target))
+            print(f"restored {target}")
+            restored = True
+        elif target.exists() and _is_our_stub(target):
+            # Only remove a file we put here; leave a real runtime alone.
+            target.unlink()
+            print(f"removed stub {target} (no original to restore)")
+            restored = True
+    # The injector and the distinctly-named shim are ours alone; a game never
+    # ships them, so remove them by name.
+    for name in (SHIM_INJECT_NAME, INJECTOR):
+        target = game_dir / name
+        if target.is_file():
+            target.unlink()
+            print(f"removed {target}")
+            restored = True
+    return restored
+
+
 def cmd_stubs(args: argparse.Namespace) -> int:
     # The LibOVR loader searches the exe's own folder for a bare
     # LibOVRRT64_1.dll (and the Platform SDK beside it), so both stubs go in
@@ -79,42 +135,10 @@ def cmd_stubs(args: argparse.Namespace) -> int:
         sys.exit(f"ovrl: {game_dir} is not a directory")
 
     if args.action == "install":
-        build = Path(args.build)
-        # The game's LibOVR loader often verifies a DLL is Meta-signed before
-        # loading it. With --real-runtime / --real-platform we place Meta's
-        # own genuine signed DLL here so that check passes against a real
-        # file; the injected shim's LoadLibrary redirect still swaps our
-        # implementation in at load, so Meta's service code never runs. When
-        # no real file is given for a slot, our stub is installed there.
-        real = {RUNTIME_DLL: args.real_runtime, PLATFORM_DLL: args.real_platform}
-        for name in (RUNTIME_DLL, PLATFORM_DLL):
-            is_real = bool(real[name])
-            src = _check_real_dll(Path(real[name]), name) if is_real \
-                else _build_file(build, name)
-            target = game_dir / name
-            backup = game_dir / (name + BACKUP_SUFFIX)
-            # Never back up one of our own stubs as if it were the original.
-            if target.exists() and not backup.exists() and not _is_our_stub(target):
-                shutil.copy2(target, backup)
-                print(f"backed up original to {backup}")
-            shutil.copy2(src, target)
-            print(f"installed {'real ' + name if is_real else 'stub'} {target}")
-    else:
-        restored = False
-        for name in (RUNTIME_DLL, PLATFORM_DLL):
-            target = game_dir / name
-            backup = game_dir / (name + BACKUP_SUFFIX)
-            if backup.exists():
-                shutil.move(str(backup), str(target))
-                print(f"restored {target}")
-                restored = True
-            elif target.exists() and _is_our_stub(target):
-                # Only remove a file we put here; leave a real runtime alone.
-                target.unlink()
-                print(f"removed stub {target} (no original to restore)")
-                restored = True
-        if not restored:
-            print(f"ovrl: nothing to restore in {game_dir}", file=sys.stderr)
+        _install_stubs(game_dir, Path(args.build),
+                       args.real_runtime, args.real_platform)
+    elif not _restore_dir(game_dir):
+        print(f"ovrl: nothing to restore in {game_dir}", file=sys.stderr)
     return 0
 
 
@@ -125,6 +149,8 @@ def _find_openvr_api(override: str | None) -> Path | None:
         return p if p.is_file() else None
     steam_roots = [
         Path.home() / ".steam/steam",
+        Path.home() / ".steam/debian-installation",  # Debian/Mint packaging
+        Path.home() / ".steam/root",
         Path.home() / ".local/share/Steam",
         Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
     ]
@@ -226,6 +252,57 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, env=env)
 
 
+def cmd_steam_setup(args: argparse.Namespace) -> int:
+    """Prepare a game folder to be launched through Steam as a non-Steam game.
+
+    Launching under a bare `proton run` leaves Proton's OpenVR bridge
+    (vrclient) without the Steam runtime environment that points it at the
+    native Linux SteamVR server, so VR_InitInternal fails. Steam sets that up
+    itself for any app it launches. So instead of a prefix we stage everything
+    next to the game exe and let Steam drive the launch: the genuine runtime
+    (for the signature check), our shim under its own name, the injector and
+    openvr_api.dll all live in the exe's folder, and Steam's shortcut points at
+    the injector, which starts the game with the shim injected.
+    """
+    exe = Path(args.game_exe)
+    if not exe.is_file():
+        sys.exit(f"ovrl: {exe} not found")
+    exe_dir = exe.parent
+    build = Path(args.build)
+
+    # Genuine runtime + Platform stub next to the exe for the signature check.
+    _install_stubs(exe_dir, build, args.real_runtime, args.real_platform)
+    # Our shim (distinct name), the injector and OpenVR beside the exe.
+    _install_file(_build_file(build, RUNTIME_DLL), exe_dir / SHIM_INJECT_NAME, "shim")
+    _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
+
+    openvr = _find_openvr_api(args.openvr)
+    if openvr:
+        _install_file(openvr, exe_dir / OPENVR_DLL, OPENVR_DLL)
+    else:
+        print(f"ovrl: warning: {OPENVR_DLL} not found; VR output will be "
+              "unavailable until it is present. Pass --openvr <path> or "
+              "install SteamVR.", file=sys.stderr)
+
+    # Steam runs the launch options as a shell command with %command% expanded
+    # to `proton run <target.exe>`. A leading VAR=val sets an env var that
+    # reaches the Wine process; everything after %command% is passed to the
+    # injector. Relative names resolve against the shortcut's "Start In" dir.
+    hmd = f" -hmd={args.hmd}" if args.hmd else ""
+    game_args = (" " + " ".join(args.game_args)) if args.game_args else ""
+    launch_opts = (f'OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait {SHIM_INJECT_NAME} '
+                   f'-- "{exe.name}"{hmd}{game_args}')
+    target = exe_dir / INJECTOR
+    print("\nAdd the game to Steam as a non-Steam game, then in its Properties:")
+    print(f"  Target / exe : {target}")
+    print(f"  Start In     : {exe_dir}")
+    print(f"  Launch opts  : {launch_opts}")
+    print("  Compatibility: force Proton (the same version you use elsewhere)")
+    print("\nStart SteamVR, then launch the entry from your Steam library. "
+          "Steam wires up the VR bridge for you.")
+    return 0
+
+
 def cmd_exports(args: argparse.Namespace) -> int:
     return pe.main(args.files)
 
@@ -323,6 +400,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--proton", help="Proton install dir; plain Wine is used if omitted")
     s.add_argument("--wine", default="wine")
     s.set_defaults(func=cmd_launch)
+
+    s = sub.add_parser("steam-setup",
+                       help="stage a game folder for launch through Steam as a "
+                            "non-Steam game (lets Proton wire up VR)")
+    s.add_argument("game_exe", help="the game's .exe (stubs install beside it)")
+    s.add_argument("game_args", nargs=argparse.REMAINDER,
+                   help="extra args to pass the game")
+    s.add_argument("--real-runtime", metavar="LibOVRRT64_1.dll",
+                   help="genuine Meta-signed runtime for the signature check")
+    s.add_argument("--real-platform", metavar="LibOVRPlatform64_1.dll",
+                   help="genuine Meta-signed Platform SDK (the stub is used otherwise)")
+    s.add_argument("--openvr", metavar="openvr_api.dll",
+                   help="path to SteamVR's openvr_api.dll (auto-detected if omitted)")
+    s.add_argument("--hmd", default="OculusRift",
+                   help="value for the game's -hmd arg (default: %(default)s; "
+                        "pass empty to omit)")
+    s.set_defaults(func=cmd_steam_setup)
 
     s = sub.add_parser("exports", help="list or diff DLL exports")
     s.add_argument("files", nargs="+")

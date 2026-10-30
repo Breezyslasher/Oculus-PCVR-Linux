@@ -126,6 +126,39 @@ Logs go to stderr and to `ovrstub.log` next to the game exe (or wherever
 events and env vars the game looks for, which is the first place to look when
 a new game doesn't reach its menu.
 
+## See it in the headset (Milestone 3: launch through Steam)
+
+`ovrl launch` runs the game under a bare `proton run`, which is enough to
+reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
+runtime environment that points it at the native Linux SteamVR server — so
+VR init fails and you get a black screen. Steam sets that environment up for
+anything it launches. The simplest fix is therefore to let Steam drive the
+launch: add the game as a non-Steam game and point its shortcut at our
+injector.
+
+```sh
+GAME=/path/to/Game/Binaries/Win64/Game.exe   # the real game exe
+
+cd launcher
+# Stage everything next to the exe: the genuine runtime for the signature
+# check, our shim (as ovrstub_shim.dll), the injector, and openvr_api.dll.
+python3 -m ovrl steam-setup "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dll
+# --real-platform, --openvr and --hmd work as for the commands above.
+```
+
+It prints the exact shortcut settings. In Steam: **Add a Non-Steam Game**,
+browse to `ovrinject.exe` in the game folder, then in its **Properties**:
+
+- **Target** stays `ovrinject.exe`, **Start In** the game folder (Steam fills
+  this in when you browse to the exe).
+- **Launch Options**: paste the printed line, e.g.
+  `OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "Game.exe" -hmd=OculusRift`
+- **Compatibility**: force the same Proton version you use elsewhere.
+
+Start SteamVR, then launch the entry from your library. Steam wires up the VR
+bridge, Proton loads our shim through the injector, and the shim renders the
+game through SteamVR. Undo with `ovrl stubs restore "$(dirname "$GAME")"`.
+
 ## Layout
 
 ```
