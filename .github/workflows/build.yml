@@ -21,8 +21,11 @@ jobs:
           WINEPREFIX: ${{ runner.temp }}/wineprefix
           WINEDLLOVERRIDES: "mscoree,mshtml="
         run: make check WINE=/usr/lib/wine/wine64
-      - name: Launcher sanity
-        run: cd launcher && python3 -m ovrl exports ../build/LibOVRPlatform64_1.dll
+      - name: Launcher tests
+        run: |
+          cd launcher
+          python3 -m unittest discover -s tests -v
+          python3 -m ovrl exports ../build/LibOVRPlatform64_1.dll
       - uses: actions/upload-artifact@v4
         with:
           name: ovrstub-dlls

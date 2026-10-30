@@ -1,21 +1,24 @@
 """ovrl: set up and launch Rift Store games under Proton with the stub DLLs.
 
-Only the local half of the launcher exists so far (Milestones 2-3): installing
-the stubs into a game folder, preparing a Proton prefix and launching through
-the injector. Store login, library and downloads (Milestones 1 and 6) are
-placeholders until download feasibility is confirmed.
+Store side (Milestone 1): log in with your Meta access token, list owned apps
+and their builds, and download a Rift build. Local side (Milestones 2-3):
+install the stubs into a game folder, prepare a Proton prefix and launch
+through the injector.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
+import getpass
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from . import pe
+from . import pe, store
+from .download import download_build
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BUILD = REPO_ROOT / "build"
@@ -140,11 +143,66 @@ def cmd_exports(args: argparse.Namespace) -> int:
     return pe.main(args.files)
 
 
-def cmd_not_yet(args: argparse.Namespace) -> int:
-    print(f"ovrl {args.command}: not implemented yet. Store login, library and "
-          "downloads depend on Milestone 1 (download feasibility); see "
-          "docs/PLAN.md.", file=sys.stderr)
-    return 1
+def cmd_login(args: argparse.Namespace) -> int:
+    token = args.token or getpass.getpass("Meta access token (input hidden): ")
+    token = store.clean_token(token)
+    problem = store.token_problem(token)
+    if problem:
+        sys.exit(f"ovrl: that doesn't look like a user token: {problem}")
+    user = store.current_user(token)
+    path = store.save_token(token)
+    print(f"logged in as {user.get('alias') or user.get('display_name') or user.get('id')}")
+    print(f"token saved to {path} (readable only by you)")
+    return 0
+
+
+def cmd_library(args: argparse.Namespace) -> int:
+    apps = store.entitlements(store.load_token())
+    if not apps:
+        print("no owned apps returned")
+        return 0
+    width = max(len(a.id) for a in apps)
+    for a in apps:
+        print(f"{a.id:<{width}}  {a.name}")
+    print(f"\n{len(apps)} apps. Quest and Rift versions of a game have different "
+          "IDs; `ovrl versions <id>` shows a Rift app's builds.")
+    return 0
+
+
+def _date(ts: int) -> str:
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+
+
+def cmd_versions(args: argparse.Namespace) -> int:
+    name, builds = store.app_builds(store.load_token(), args.app_id)
+    print(f"{name or 'App'} ({args.app_id})")
+    for b in builds:
+        channels = f"  [{', '.join(c for c in b.channels if c)}]" if any(b.channels) else ""
+        print(f"  build {b.id}  version {b.version} (code {b.version_code})"
+              f"  {_date(b.created)}{channels}")
+    return 0
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    token = store.load_token()
+    build_id = args.build_id
+    name = args.app_id
+    if not build_id:
+        name, builds = store.app_builds(token, args.app_id)
+        if not builds:
+            sys.exit(f"ovrl: {name or args.app_id} has no downloadable builds")
+        live = [b for b in builds if any(c.upper() == "LIVE" for c in b.channels)]
+        chosen = (live or builds)[0]
+        build_id = chosen.id
+        print(f"{name}: build {chosen.id}, version {chosen.version}")
+    dest = Path(args.dest) if args.dest else Path.cwd() / f"{args.app_id}-{build_id}"
+    manifest = download_build(token, build_id, dest, workers=args.jobs)
+    print(f"done: {dest}")
+    launch = manifest.get("launchFile")
+    if launch:
+        params = manifest.get("launchParameters") or ""
+        print(f"launch file: {dest / launch}" + (f"  (args: {params})" if params else ""))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,12 +233,34 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("files", nargs="+")
     s.set_defaults(func=cmd_exports)
 
-    for name in ("login", "library", "download"):
-        s = sub.add_parser(name, help="(not implemented yet)")
-        s.set_defaults(func=cmd_not_yet)
+    s = sub.add_parser("login", help="save your Meta access token (see README)")
+    s.add_argument("--token", help="token to save; prompted for (hidden) if omitted")
+    s.set_defaults(func=cmd_login)
+
+    s = sub.add_parser("library", help="list apps your account owns")
+    s.set_defaults(func=cmd_library)
+
+    s = sub.add_parser("versions", help="list a Rift app's builds")
+    s.add_argument("app_id")
+    s.set_defaults(func=cmd_versions)
+
+    s = sub.add_parser("download", help="download a Rift build (resumable)")
+    s.add_argument("app_id")
+    s.add_argument("--build-id", help="specific build (default: newest LIVE build)")
+    s.add_argument("--dest", help="target directory (default: ./<app>-<build>)")
+    s.add_argument("--jobs", type=int, default=8,
+                   help="parallel segment downloads (default: %(default)s)")
+    s.set_defaults(func=cmd_download)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except store.StoreError as e:
+        print(f"ovrl: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted; re-run the same command to resume", file=sys.stderr)
+        return 130
