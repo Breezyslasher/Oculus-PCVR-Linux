@@ -148,13 +148,24 @@ static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DA
 {
     CRYPT_PROVIDER_SGNR *cps =
         real_GetProvSignerFromChain(cpd, idxSigner, counterSigner, idxCounterSigner);
-    if (cps)
-        LOG("WTHelperGetProvSignerFromChain(signer %lu) -> csCertChain=%lu "
-            "(game wants exactly 3)", (unsigned long)idxSigner,
-            (unsigned long)cps->csCertChain);
-    else
+    if (!cps) {
         LOG("WTHelperGetProvSignerFromChain(signer %lu) -> NULL",
             (unsigned long)idxSigner);
+        return cps;
+    }
+    LOG("WTHelperGetProvSignerFromChain(signer %lu) -> csCertChain=%lu "
+        "(game wants exactly 3)", (unsigned long)idxSigner,
+        (unsigned long)cps->csCertChain);
+    /* The game's ValidateCertificateContents walks pasCertChain and rejects
+     * any test cert or untrusted self-signed root. Log each cert's flags so
+     * we can see which one it refuses. */
+    for (DWORD i = 0; i < cps->csCertChain && cps->pasCertChain; i++) {
+        CRYPT_PROVIDER_CERT *pc = &cps->pasCertChain[i];
+        LOG("  cert[%lu]: fSelfSigned=%d fTrustedRoot=%d fTestCert=%d "
+            "dwError=0x%lx dwConfidence=0x%lx", (unsigned long)i,
+            (int)pc->fSelfSigned, (int)pc->fTrustedRoot, (int)pc->fTestCert,
+            (unsigned long)pc->dwError, (unsigned long)pc->dwConfidence);
+    }
     return cps;
 }
 
