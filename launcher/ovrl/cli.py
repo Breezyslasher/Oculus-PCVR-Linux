@@ -289,9 +289,8 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     # reaches the Wine process; everything after %command% is passed to the
     # injector. Relative names resolve against the shortcut's "Start In" dir.
     hmd = f" -hmd={args.hmd}" if args.hmd else ""
-    game_args = (" " + " ".join(args.game_args)) if args.game_args else ""
     launch_opts = (f'OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait {SHIM_INJECT_NAME} '
-                   f'-- "{exe.name}"{hmd}{game_args}')
+                   f'-- "{exe.name}"{hmd}')
     target = exe_dir / INJECTOR
     print("\nAdd the game to Steam as a non-Steam game, then in its Properties:")
     print(f"  Target / exe : {target}")
@@ -405,8 +404,6 @@ def build_parser() -> argparse.ArgumentParser:
                        help="stage a game folder for launch through Steam as a "
                             "non-Steam game (lets Proton wire up VR)")
     s.add_argument("game_exe", help="the game's .exe (stubs install beside it)")
-    s.add_argument("game_args", nargs=argparse.REMAINDER,
-                   help="extra args to pass the game")
     s.add_argument("--real-runtime", metavar="LibOVRRT64_1.dll",
                    help="genuine Meta-signed runtime for the signature check")
     s.add_argument("--real-platform", metavar="LibOVRPlatform64_1.dll",
