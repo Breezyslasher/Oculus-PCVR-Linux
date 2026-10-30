@@ -52,6 +52,7 @@ EXPORT const char ovrstub_build_marker[] = "OVRSTUB-BUILD-MARKER-v1";
 static ovrErrorInfo g_last_error;
 static HANDLE g_hmd_event;
 static int g_initialized;
+EXPORT double ovr_GetTimeInSeconds(void);
 static unsigned g_minor;  /* SDK minor version the game was built against */
 static LARGE_INTEGER g_qpc_freq;
 
@@ -295,18 +296,28 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
 {
     TRACE_FIRST();
     ovrTrackingState s;
-    (void)absTime; (void)latencyMarker;
+    (void)latencyMarker;
     memset(&s, 0, sizeof(s));
+    /* absTime is when the caller wants the pose for (normally the frame's
+     * predicted display time); 0 means "now". Predict that far ahead. */
+    double now = ovr_GetTimeInSeconds();
+    float predict = absTime > 0.0 ? (float)(absTime - now) : 0.0f;
+    if (predict < 0.0f)
+        predict = 0.0f;
+    if (predict > 0.1f)
+        predict = 0.1f;
     s.HeadPose.ThePose.Orientation.w = 1.0f;
     s.CalibratedOrigin.Orientation.w = 1.0f;
     if (session_live(session)) {
-        s.HeadPose = vr_backend_head_pose();
+        s.HeadPose = vr_backend_head_pose(predict);
+        s.HeadPose.TimeInSeconds = now + predict;
         s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
         for (int hand = 0; hand < 2; hand++) {
             struct vr_controller c;
             s.HandPoses[hand].ThePose.Orientation.w = 1.0f;
-            if (vr_backend_controller(hand, &c) && c.pose_valid) {
+            if (vr_backend_controller(hand, &c, predict) && c.pose_valid) {
                 s.HandPoses[hand] = c.pose;
+                s.HandPoses[hand].TimeInSeconds = now + predict;
                 s.HandStatusFlags[hand] = 0x0001 | 0x0002;
             }
         }
@@ -902,9 +913,17 @@ EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
     (void)frameIndex; (void)viewScaleDesc;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    /* Old single-call frame model: block for poses, submit, present. */
+    /* Old single-call frame model. SteamVR's loop is WaitGetPoses, render,
+     * Submit; WaitGetPoses must come before the game samples its next pose.
+     * So submit this frame first, then wait for the next frame's slot here,
+     * before returning to the game (waiting first, as before, delivered
+     * every frame a vsync late). The very first frame waits up front. */
+    static LONG waited_once;
+    if (!InterlockedExchange(&waited_once, 1))
+        vr_backend_begin_frame();
+    ovrResult r = submit_layers(layerPtrList, layerCount);
     vr_backend_begin_frame();
-    return submit_layers(layerPtrList, layerCount);
+    return r;
 }
 
 EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
@@ -967,14 +986,12 @@ EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
     (void)session;
     unsigned types = 0;
     struct vr_controller c;
-    if (vr_backend_controller(0, &c))
+    if (vr_backend_controller(0, &c, 0.0f))
         types |= ovrControllerType_LTouch;
-    if (vr_backend_controller(1, &c))
+    if (vr_backend_controller(1, &c, 0.0f))
         types |= ovrControllerType_RTouch;
     return types;
 }
-
-EXPORT double ovr_GetTimeInSeconds(void);
 
 /* Radial thumbstick deadzone like LibOVR's, rescaled so it starts at 0. */
 static ovrVector2f stick_deadzone(ovrVector2f v)
@@ -1017,7 +1034,7 @@ EXPORT ovrResult ovr_GetInputState(ovrSession session, int controllerType,
         for (int hand = 0; hand < 2; hand++) {
             unsigned type = hand ? ovrControllerType_RTouch : ovrControllerType_LTouch;
             struct vr_controller c;
-            if (!(controllerType & type) || !vr_backend_controller(hand, &c))
+            if (!(controllerType & type) || !vr_backend_controller(hand, &c, 0.0f))
                 continue;
             st.ControllerType |= type;
             if (c.pressed & VRBIT(VR_BUTTON_A))
@@ -1193,7 +1210,9 @@ EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameInd
 {
     TRACE_FIRST();
     (void)session; (void)frameIndex;
-    return ovr_GetTimeInSeconds();
+    /* When a frame started now will be on screen, so games predict their
+     * render poses that far ahead (returning "now" made motion lag). */
+    return ovr_GetTimeInSeconds() + vr_backend_seconds_to_photons();
 }
 
 /* ---- Properties: always return the caller's default -------------------- */
@@ -1252,7 +1271,7 @@ EXPORT float ovr_GetFloat(ovrSession s, const char *name, float def)
         return 0.064f;
     /* Seconds per display frame; the real runtime reports the HMD's rate. */
     if (!strcmp(name, "VsyncToNextVsync"))
-        return 1.0f / 90.0f;
+        return 1.0f / vr_backend_display_hz();
     return def;
 }
 

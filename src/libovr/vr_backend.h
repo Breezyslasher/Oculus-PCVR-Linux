@@ -34,7 +34,12 @@ ovrFovPort vr_backend_fov(ovrEyeType eye);
 ovrPosef vr_backend_eye_pose(ovrEyeType eye);
 
 /* Latest head pose (orientation + position). Identity if unavailable. */
-ovrPoseStatef vr_backend_head_pose(void);
+ovrPoseStatef vr_backend_head_pose(float predict_seconds);
+
+/* Seconds from now until a frame started now reaches the display, and the
+ * display's refresh rate; from SteamVR's vsync timing (defaults if unknown). */
+double vr_backend_seconds_to_photons(void);
+float vr_backend_display_hz(void);
 
 /* One hand controller's state as SteamVR reports it (legacy input). */
 /* OpenVR EVRButtonId values used by its legacy Touch bindings, so callers
@@ -55,7 +60,7 @@ struct vr_controller {
 };
 
 /* Read hand 0 (left) or 1 (right). Returns false if it isn't connected. */
-bool vr_backend_controller(int hand, struct vr_controller *out);
+bool vr_backend_controller(int hand, struct vr_controller *out, float predict_seconds);
 
 bool vr_backend_hmd_present(void);
 /* DXGI adapter index SteamVR renders to, or -1 if it doesn't say. */

@@ -228,7 +228,37 @@ ovrPosef vr_backend_eye_pose(ovrEyeType eye)
     return pose_from_matrix(&m);
 }
 
-ovrPoseStatef vr_backend_head_pose(void)
+float vr_backend_display_hz(void)
+{
+    if (!g_active)
+        return 90.0f;
+    ETrackedPropertyError err = ETrackedPropertyError_TrackedProp_Success;
+    float hz = g_system->GetFloatTrackedDeviceProperty(
+        k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &err);
+    return (err == ETrackedPropertyError_TrackedProp_Success && hz > 1.0f) ? hz : 90.0f;
+}
+
+/* Valve's recipe for "seconds to photons": the rest of this frame, plus the
+ * display's vsync-to-photons latency. */
+double vr_backend_seconds_to_photons(void)
+{
+    float hz = vr_backend_display_hz();
+    if (!g_active)
+        return 1.0 / hz;
+    float since_vsync = 0.0f;
+    uint64_t frame = 0;
+    g_system->GetTimeSinceLastVsync(&since_vsync, &frame);
+    ETrackedPropertyError err = ETrackedPropertyError_TrackedProp_Success;
+    float to_photons = g_system->GetFloatTrackedDeviceProperty(
+        k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float,
+        &err);
+    if (err != ETrackedPropertyError_TrackedProp_Success || to_photons < 0.0f)
+        to_photons = 0.0f;
+    double s = 1.0 / hz - since_vsync + to_photons;
+    return s > 0.0 ? s : 0.0;
+}
+
+ovrPoseStatef vr_backend_head_pose(float predict_seconds)
 {
     ovrPoseStatef s;
     memset(&s, 0, sizeof(s));
@@ -238,10 +268,10 @@ ovrPoseStatef vr_backend_head_pose(void)
 
     TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
     memset(poses, 0, sizeof(poses));
-    /* Standing-space poses, predicted to "now". The compositor supplies more
-     * precise render poses during the frame loop; this is for polling. */
+    /* Standing-space poses, predicted to the time the caller asked about
+     * (usually when its frame will be displayed). */
     g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
         k_unMaxTrackedDeviceCount);
 
     const TrackedDevicePose_t *hmd = &poses[k_unTrackedDeviceIndex_Hmd];
@@ -268,7 +298,7 @@ static void fill_pose_state(ovrPoseStatef *s, const TrackedDevicePose_t *p)
     s->LinearVelocity.z = p->vVelocity.v[2];
 }
 
-bool vr_backend_controller(int hand, struct vr_controller *out)
+bool vr_backend_controller(int hand, struct vr_controller *out, float predict_seconds)
 {
     memset(out, 0, sizeof(*out));
     out->pose.ThePose.Orientation.w = 1.0f;
@@ -293,7 +323,7 @@ bool vr_backend_controller(int hand, struct vr_controller *out)
     TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
     memset(poses, 0, sizeof(poses));
     g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
         k_unMaxTrackedDeviceCount);
     if (poses[idx].bPoseIsValid) {
         fill_pose_state(&out->pose, &poses[idx]);
