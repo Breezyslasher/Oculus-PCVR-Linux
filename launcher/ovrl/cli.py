@@ -301,7 +301,8 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     return 0
 
 
-def _steam_launch_options(exe: Path, hmd: str | None) -> str:
+def _steam_launch_options(exe: Path, hmd: str | None,
+                          prefix: Path | None = None) -> str:
     """The Steam launch-options line that runs the game through the injector.
 
     Steam runs the launch options as a shell command with %command% expanded
@@ -314,6 +315,10 @@ def _steam_launch_options(exe: Path, hmd: str | None) -> str:
     # the shell in the launch-options field from eating backslashes; skip it if
     # the path has a space, which a VAR=val prefix there can't carry.
     env_prefix = "OVRSTUB_INSTALL_ROOT_CA=1"
+    if prefix:
+        # Steam would otherwise give the shortcut a fresh compatdata prefix;
+        # overriding it reuses one already prepared with `ovrl prefix-setup`.
+        env_prefix = f"STEAM_COMPAT_DATA_PATH={prefix} " + env_prefix
     log_win = f"Z:{exe.parent}/ovrstub.log"
     if " " not in log_win:
         env_prefix += f" OVRSTUB_LOG={log_win}"
@@ -380,8 +385,17 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
     exe_field = f'"{exe_dir / INJECTOR}"'
     start_field = f'"{exe_dir}/"'
     appid = steam.shortcut_appid(exe_field, name)
+    prefix = None
+    if args.prefix:
+        prefix = Path(args.prefix).expanduser().resolve()
+        if not (_wine_prefix(prefix) / "drive_c").is_dir():
+            sys.exit(f"ovrl: {prefix} is not an initialized Proton prefix")
+        if " " in str(prefix):
+            sys.exit(f"ovrl: {prefix} contains a space, which Steam launch "
+                     "options can't carry in a VAR=val prefix")
     entry = steam.make_entry(appid, name, exe_field, start_field,
-                             _steam_launch_options(exe, args.hmd), openvr=True)
+                             _steam_launch_options(exe, args.hmd, prefix),
+                             openvr=True)
 
     # --- shortcuts.vdf ---
     shortcuts = user_dir / "config" / "shortcuts.vdf"
@@ -548,6 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--proton-tool", metavar="NAME",
                    help="compat tool name, e.g. proton_10 (default: reuse the one "
                         "your other games are mapped to)")
+    s.add_argument("--prefix", metavar="COMPATDATA",
+                   help="Proton prefix (compatdata dir) to run in instead of the "
+                        "fresh one Steam would create, e.g. one set up with "
+                        "`ovrl prefix-setup`")
     s.add_argument("--steam-root", help="Steam install dir (auto-detected)")
     s.add_argument("--steam-user", metavar="ID",
                    help="userdata folder to use if you have several Steam users")

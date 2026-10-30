@@ -151,8 +151,14 @@ config, no dialogs. **Quit Steam fully first** (it rewrites its config on
 exit, which would discard the change):
 
 ```sh
-python3 -m ovrl add-to-steam "$GAME" --name "Spider-Man Homecoming VR"
+python3 -m ovrl add-to-steam "$GAME" --name "Spider-Man Homecoming VR" \
+    --prefix ~/.local/share/ovrl/prefixes/mygame
 ```
+
+`--prefix` runs the game in a prefix you already prepared with
+`ovrl prefix-setup` (above) instead of the fresh one Steam would create for
+the shortcut. On Spider-Man: Homecoming this is what got the game past its
+runtime check *and* into a SteamVR session.
 
 This adds the entry to `userdata/<you>/config/shortcuts.vdf` (flagged as a VR
 app) and forces Proton for it in `config/config.vdf`, reusing whichever
