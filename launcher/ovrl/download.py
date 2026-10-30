@@ -123,7 +123,7 @@ class _Progress:
             sys.stderr.flush()
 
 
-def download_build(token: str, build_id: str, dest: Path, workers: int = 6) -> dict:
+def download_build(token: str, build_id: str, dest: Path, workers: int = 8) -> dict:
     """Download every file of a Rift build into dest. Returns the manifest."""
     dest.mkdir(parents=True, exist_ok=True)
     manifest = fetch_manifest(token, build_id)
@@ -148,23 +148,34 @@ def download_build(token: str, build_id: str, dest: Path, workers: int = 6) -> d
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for name, path, info in todo:
             path.parent.mkdir(parents=True, exist_ok=True)
+            # Truncate now so files with no segments still get created.
+            open(path.with_name(path.name + ".part"), "wb").close()
+
+        # One window of segment requests spans file boundaries, so games made
+        # of many small files still keep every worker busy. Segments come
+        # back in submission order and are appended to their file's .part.
+        jobs = ((i, str(s[1])) for i, (_, _, info) in enumerate(todo)
+                for s in info.get("segments") or [])
+        remaining = [len(info.get("segments") or []) for _, _, info in todo]
+        window: deque[tuple[int, Future]] = deque()
+
+        def submit_next() -> None:
+            job = next(jobs, None)
+            if job is not None:
+                window.append((job[0], pool.submit(_fetch_segment, token, build_id, job[1])))
+
+        for _ in range(workers * 2):
+            submit_next()
+        for i, (name, path, info) in enumerate(todo):
             part = path.with_name(path.name + ".part")
-            segments = [str(s[1]) for s in info.get("segments") or []]
-            # Keep a bounded window of segments in flight, written in order.
-            window: deque[Future] = deque()
-            it = iter(segments)
-            with open(part, "wb") as out:
-                for sha in it:
-                    window.append(pool.submit(_fetch_segment, token, build_id, sha))
-                    if len(window) >= workers * 2:
-                        break
-                while window:
-                    data = window.popleft().result()
+            with open(part, "ab") as out:
+                while remaining[i]:
+                    idx, fut = window.popleft()
+                    data = fut.result()
+                    submit_next()
                     out.write(data)
                     progress.add(len(data))
-                    nxt = next(it, None)
-                    if nxt is not None:
-                        window.append(pool.submit(_fetch_segment, token, build_id, nxt))
+                    remaining[idx] -= 1
             if _file_sha256(part) != str(info.get("sha256", "")).lower():
                 part.unlink()
                 raise StoreError(f"{name}: assembled file failed its SHA-256 check")

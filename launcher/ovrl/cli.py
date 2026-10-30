@@ -175,7 +175,7 @@ def _date(ts: int) -> str:
 
 def cmd_versions(args: argparse.Namespace) -> int:
     name, builds = store.app_builds(store.load_token(), args.app_id)
-    print(f"{name} ({args.app_id})")
+    print(f"{name or 'App'} ({args.app_id})")
     for b in builds:
         channels = f"  [{', '.join(c for c in b.channels if c)}]" if any(b.channels) else ""
         print(f"  build {b.id}  version {b.version} (code {b.version_code})"
@@ -248,7 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("app_id")
     s.add_argument("--build-id", help="specific build (default: newest LIVE build)")
     s.add_argument("--dest", help="target directory (default: ./<app>-<build>)")
-    s.add_argument("--jobs", type=int, default=6, help="parallel segment downloads")
+    s.add_argument("--jobs", type=int, default=8,
+                   help="parallel segment downloads (default: %(default)s)")
     s.set_defaults(func=cmd_download)
     return p
 

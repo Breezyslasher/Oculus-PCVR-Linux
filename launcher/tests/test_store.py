@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 import zipfile
@@ -38,6 +39,9 @@ class FakeMeta:
         self.blobs: dict[str, bytes] = {}
         self.corrupt_once: set[str] = set()
         self.segment_requests = 0
+        self.segment_delay = 0.0
+        self.in_flight = self.max_in_flight = 0
+        self.lock = threading.Lock()
         manifest_files = {}
         for name, data in files.items():
             segs = []
@@ -101,7 +105,13 @@ class FakeMeta:
                         z.writestr("manifest.json", json.dumps(meta.manifest))
                     return self._send(200, buf.getvalue())
                 if url.path == "/binaries/segment/":
-                    meta.segment_requests += 1
+                    with meta.lock:
+                        meta.segment_requests += 1
+                        meta.in_flight += 1
+                        meta.max_in_flight = max(meta.max_in_flight, meta.in_flight)
+                    time.sleep(meta.segment_delay)
+                    with meta.lock:
+                        meta.in_flight -= 1
                     sha = q["segment_sha256"]
                     data = meta.blobs[sha]
                     if sha in meta.corrupt_once:
@@ -212,6 +222,16 @@ class StoreTest(unittest.TestCase):
         dest = Path(self.tmp.name) / "game"
         download.download_build(TOKEN, BUILD, dest, workers=2)
         self.assertEqual((dest / "Game.exe").read_bytes(), self.files["Game.exe"])
+
+    def test_small_files_download_in_parallel(self):
+        files = {f"Content/file{i:02}.dat": os.urandom(300) for i in range(30)}
+        self.meta.__init__(files)
+        self.meta.segment_delay = 0.05
+        dest = Path(self.tmp.name) / "game"
+        download.download_build(TOKEN, BUILD, dest, workers=6)
+        for name, data in files.items():
+            self.assertEqual((dest / name).read_bytes(), data)
+        self.assertGreaterEqual(self.meta.max_in_flight, 4)
 
     def test_bad_token_on_cdn(self):
         with self.assertRaisesRegex(store.StoreError, "refused"):
