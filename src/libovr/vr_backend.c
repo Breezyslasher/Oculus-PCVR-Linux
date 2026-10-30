@@ -172,14 +172,20 @@ ovrFovPort vr_backend_fov(ovrEyeType eye)
     ovrFovPort fov = {1.0f, 1.0f, 1.0f, 1.0f};
     if (!g_active)
         return fov;
-    /* OpenVR gives raw projection tangents (left/right/top/bottom), with up
-     * negative. LibOVR wants positive up/down/left/right half-tangents. */
+    /* OpenVR gives raw projection tangents (left/right/top/bottom).
+     * Despite the names, "top" and "bottom" are y-down: building the
+     * projection from them (OpenVR's ComposeProjection) maps a direction
+     * with tangent `b` to the top of the image, so `b` is the UP extent and
+     * `t` (negative) the DOWN one. Reading them the other way round told
+     * games the Quest 3 sees more up than down (1.43 vs 0.97 when it's the
+     * reverse); the frame then didn't match the compositor's projection
+     * and the world zoomed and swam with head motion. */
     float l = 0, r = 0, t = 0, b = 0;
     g_system->GetProjectionRaw((EVREye)eye, &l, &r, &t, &b);
     fov.LeftTan = fabsf(l);
     fov.RightTan = fabsf(r);
-    fov.UpTan = fabsf(t);
-    fov.DownTan = fabsf(b);
+    fov.UpTan = fabsf(b);
+    fov.DownTan = fabsf(t);
     return fov;
 }
 
