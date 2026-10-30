@@ -19,6 +19,14 @@
 #include "iat_hook.h"
 #include "ovr_types.h"
 #include "sigcheck.h"
+#include "vr_backend.h"
+
+/* The one opaque session object. OpenVR is a process-wide singleton, so a
+ * single session is enough and a game only ever creates one. */
+struct ovrHmdStruct {
+    int active;
+};
+static struct ovrHmdStruct g_hmd;
 
 #define EXPORT __declspec(dllexport)
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
@@ -85,32 +93,66 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     ovrHmdDesc desc;
     (void)session;
     memset(&desc, 0, sizeof(desc));
-    desc.Type = ovrHmd_None;
+    if (!vr_backend_active()) {
+        desc.Type = ovrHmd_None;
+        return desc;
+    }
+    desc.Type = ovrHmd_CV1;
+    strcpy(desc.ProductName, "Oculus Rift via ovrstub");
+    strcpy(desc.Manufacturer, "ovrstub");
+    desc.DefaultEyeFov[ovrEye_Left] = desc.MaxEyeFov[ovrEye_Left] =
+        vr_backend_fov(ovrEye_Left);
+    desc.DefaultEyeFov[ovrEye_Right] = desc.MaxEyeFov[ovrEye_Right] =
+        vr_backend_fov(ovrEye_Right);
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    desc.Resolution.w = w * 2;   /* both eyes side by side */
+    desc.Resolution.h = h;
+    desc.DisplayRefreshRate = 90.0f;
+    desc.AvailableHmdCaps = desc.DefaultHmdCaps = 0;
+    desc.AvailableTrackingCaps = desc.DefaultTrackingCaps = 0;
     return desc;
 }
 
 EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 {
-    (void)luid;
+    if (luid)
+        memset(luid, 0, sizeof(*luid));
     if (session)
         *session = NULL;
     if (!g_initialized)
         return set_error(ovrError_NotInitialized, "ovr_Initialize not called");
-    LOG("ovr_Create -> ovrError_NoHmd");
-    return set_error(ovrError_NoHmd, "No HMD (ovrstub milestone 2)");
+    if (!vr_backend_init()) {
+        LOG("ovr_Create -> ovrError_NoHmd (no SteamVR backend)");
+        return set_error(ovrError_NoHmd, "No HMD / SteamVR not available");
+    }
+    g_hmd.active = 1;
+    if (session)
+        *session = &g_hmd;
+    LOG("ovr_Create -> session via OpenVR");
+    return ovrSuccess;
 }
 
 EXPORT void ovr_Destroy(ovrSession session)
 {
-    (void)session;
+    if (session == &g_hmd) {
+        g_hmd.active = 0;
+        vr_backend_shutdown();
+        LOG("ovr_Destroy");
+    }
 }
 
 EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *status)
 {
-    (void)session;
-    if (status)
-        memset(status, 0, sizeof(*status));
-    return set_error(ovrError_InvalidSession, "no session");
+    if (!status)
+        return set_error(ovrError_InvalidParameter, "null status");
+    memset(status, 0, sizeof(*status));
+    if (session != &g_hmd || !vr_backend_active())
+        return set_error(ovrError_InvalidSession, "no session");
+    status->IsVisible = ovrTrue;
+    status->HmdPresent = ovrTrue;
+    status->HmdMounted = ovrTrue;
+    return ovrSuccess;
 }
 
 EXPORT unsigned ovr_GetTrackerCount(ovrSession session)
@@ -139,10 +181,14 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
                                              ovrBool latencyMarker)
 {
     ovrTrackingState s;
-    (void)session; (void)absTime; (void)latencyMarker;
+    (void)absTime; (void)latencyMarker;
     memset(&s, 0, sizeof(s));
     s.HeadPose.ThePose.Orientation.w = 1.0f;
     s.CalibratedOrigin.Orientation.w = 1.0f;
+    if (session == &g_hmd && vr_backend_active()) {
+        s.HeadPose = vr_backend_head_pose();
+        s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
+    }
     return s;
 }
 
@@ -166,7 +212,14 @@ EXPORT ovrSizei ovr_GetFovTextureSize(ovrSession session, ovrEyeType eye,
                                       ovrFovPort fov, float pixelsPerDisplayPixel)
 {
     ovrSizei s = {0, 0};
-    (void)session; (void)eye; (void)fov; (void)pixelsPerDisplayPixel;
+    (void)session; (void)eye; (void)fov;
+    if (vr_backend_active()) {
+        int w, h;
+        vr_backend_render_target_size(&w, &h);
+        float scale = pixelsPerDisplayPixel > 0.0f ? pixelsPerDisplayPixel : 1.0f;
+        s.w = (int)(w * scale);
+        s.h = (int)(h * scale);
+    }
     return s;
 }
 
@@ -178,6 +231,14 @@ EXPORT ovrEyeRenderDescV1 ovr_GetRenderDesc(ovrSession session, ovrEyeType eye,
     memset(&d, 0, sizeof(d));
     d.Eye = eye;
     d.Fov = fov;
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    d.DistortedViewport.Size.w = w;
+    d.DistortedViewport.Size.h = h;
+    if (vr_backend_active()) {
+        ovrPosef p = vr_backend_eye_pose(eye);
+        d.HmdToEyeOffset = p.Position;  /* pre-1.17 used an offset vector */
+    }
     return d;
 }
 
@@ -190,6 +251,12 @@ EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
     d.Eye = eye;
     d.Fov = fov;
     d.HmdToEyePose.Orientation.w = 1.0f;
+    int w, h;
+    vr_backend_render_target_size(&w, &h);
+    d.DistortedViewport.Size.w = w;
+    d.DistortedViewport.Size.h = h;
+    if (vr_backend_active())
+        d.HmdToEyePose = vr_backend_eye_pose(eye);
     return d;
 }
 
