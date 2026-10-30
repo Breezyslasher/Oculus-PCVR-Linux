@@ -34,7 +34,8 @@ enum {
     ovrError_InvalidParameter = -1005,
     ovrError_NoHmd = -1007,
     ovrError_Unsupported = -1009,
-    ovrError_RuntimeException = -1016,
+    ovrError_InsufficientArraySize = -1016,
+    ovrError_RuntimeException = -7000,
     ovrError_Initialize = -3000,
 };
 

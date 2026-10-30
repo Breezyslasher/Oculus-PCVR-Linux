@@ -1062,6 +1062,46 @@ EXPORT ovrResult ovr_SetClientColorDesc(ovrSession session, const void *desc)
     return ovrSuccess;
 }
 
+/* Vulkan extensions the runtime needs. OVRPlugin queries these during
+ * initialisation even for D3D11 games and gives up on failure. SteamVR's
+ * Vulkan path isn't wired up here, so report an empty list. A NULL buffer
+ * asks for the required size. */
+static ovrResult vk_extension_list(const char *fn, const char *list, char *names,
+                                   uint32_t *size)
+{
+    if (!size)
+        return set_error(ovrError_InvalidParameter, "null size");
+    uint32_t need = (uint32_t)strlen(list) + 1;
+    LOG("%s(buffer %u) -> \"%s\"", fn, names ? *size : 0, list);
+    if (!names) {
+        *size = need;
+        return ovrSuccess;
+    }
+    if (*size < need) {
+        *size = need;
+        return set_error(ovrError_InsufficientArraySize, "buffer too small");
+    }
+    memcpy(names, list, need);
+    *size = need;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetInstanceExtensionsVk(ovrGraphicsLuid luid, char *names,
+                                             uint32_t *size)
+{
+    TRACE_FIRST();
+    (void)luid;
+    return vk_extension_list(__func__, "", names, size);
+}
+
+EXPORT ovrResult ovr_GetDeviceExtensionsVk(ovrGraphicsLuid luid, char *names,
+                                           uint32_t *size)
+{
+    TRACE_FIRST();
+    (void)luid;
+    return vk_extension_list(__func__, "", names, size);
+}
+
 #define UNSUPPORTED(name)                                     \
     EXPORT ovrResult name(void)                               \
     {                                                         \
@@ -1071,8 +1111,6 @@ EXPORT ovrResult ovr_SetClientColorDesc(ovrSession session, const void *desc)
 
 UNSUPPORTED(ovr_GetFovStencil)
 UNSUPPORTED(ovr_GetViewportStencil)
-UNSUPPORTED(ovr_GetInstanceExtensionsVk)
-UNSUPPORTED(ovr_GetDeviceExtensionsVk)
 UNSUPPORTED(ovr_GetSessionPhysicalDeviceVk)
 UNSUPPORTED(ovr_CreateTextureSwapChainVk)
 UNSUPPORTED(ovr_GetTextureSwapChainBufferVk)
