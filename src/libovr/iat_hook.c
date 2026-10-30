@@ -362,6 +362,14 @@ void hook_register(const char *name, void *hook, void **real)
 static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
 {
     FARPROC p = real_GetProcAddress(mod, name);
+    /* Meta's CAPI shim resolves every LibOVR export after loading the
+     * runtime; a single missing one makes it unload and retry forever. Log
+     * any ovr* lookup that misses so we can see which export to add. */
+    if (((ULONG_PTR)name >> 16) != 0 && !p &&
+        (name[0] == 'o' || name[0] == 'O') &&
+        (name[1] == 'v' || name[1] == 'V')) {
+        TRACE("GetProcAddress(%s) -> MISSING", name);
+    }
     if (!p || ((ULONG_PTR)name >> 16) == 0 || !is_system_module(mod))
         return p;
     for (size_t i = 0, n = NHOOKS; i < n; i++) {
