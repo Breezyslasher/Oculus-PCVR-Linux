@@ -49,6 +49,22 @@ file as things get confirmed or disproved on real games.
   `LibOVRPlatform64_1.dll`, and `ovrl prefix-setup` installs the Platform
   stub next to the shim.
 
+- After that, the game still crashed at startup, with or without the shim:
+  `0xC06D007E`, delay-load of **`openvr_api.dll`** (`VR_InitInternal`),
+  found with `tools/minidump_info.py`. UE 4.14 builds in the SteamVR plugin
+  even for Oculus Store builds but doesn't ship `openvr_api.dll`. Under
+  Proton SteamVR looks installed, so the plugin calls into the missing DLL.
+  Launching with **`-hmd=OculusRift`** avoids it; the game then runs (black
+  screen, since no HMD is reported) and exits cleanly.
+- It still never loaded the runtime: a `+reg,+file` trace showed no read
+  of the Oculus registry key and no attempt to open LibOVRRT. The exe
+  contains the ASCII string **`LIBOVR_DLL_DIR`**: the loader takes the runtime
+  folder from that environment variable (prefixed directly onto
+  `LibOVRRT64_1.dll`, so it needs a trailing backslash). `ovrl launch` now
+  sets it to the shim's folder. The wide string `Oculus VR, LLC` in the exe
+  is probably the signer name for the runtime signature check; whether that
+  check blocks our unsigned DLL is the next thing to find out.
+
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 
 - Unity games ship it in the game folder, so the stub can replace it there

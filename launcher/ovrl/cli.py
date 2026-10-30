@@ -123,6 +123,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
         sys.exit("ovrl: prefix not set up; run `ovrl prefix-setup` first")
 
     env = dict(os.environ)
+    # Meta's LibOVR loader (built into games) checks LIBOVR_DLL_DIR for the
+    # runtime's folder; it prepends the value as-is, so keep the backslash.
+    env.setdefault("LIBOVR_DLL_DIR", STUB_BASE_WIN + "Support\\oculus-runtime\\")
     if not _is_windows_path(args.game_exe):
         env.setdefault("OVRSTUB_LOG", _to_windows_path(
             Path(args.game_exe).resolve().parent / "ovrstub.log"))
