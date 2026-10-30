@@ -58,6 +58,29 @@ static ovrResult set_error(ovrResult r, const char *msg)
     return r;
 }
 
+/* A session handle the game may still use: ours, and not yet destroyed. */
+static int session_live(ovrSession session)
+{
+    return session == &g_hmd && g_hmd.active && vr_backend_active();
+}
+
+/* Bring OpenVR up without a session, for calls that report the HMD before
+ * (or between) sessions. Retries are throttled so a game polling while
+ * SteamVR is off doesn't flood the log with init failures. */
+static int backend_up(void)
+{
+    static DWORD last_try;
+    if (vr_backend_active())
+        return 1;
+    if (!g_initialized)
+        return 0;
+    DWORD now = GetTickCount();
+    if (last_try && now - last_try < 2000)
+        return 0;
+    last_try = now;
+    return vr_backend_init();
+}
+
 /* ---- Lifetime ---------------------------------------------------------- */
 
 EXPORT ovrResult ovr_Initialize(const ovrInitParams *params)
@@ -73,6 +96,8 @@ EXPORT void ovr_Shutdown(void)
 {
     TRACE_FIRST();
     LOG("ovr_Shutdown");
+    g_hmd.active = 0;
+    vr_backend_shutdown();
     g_initialized = 0;
 }
 
@@ -111,7 +136,9 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     ovrHmdDesc desc;
     (void)session;
     memset(&desc, 0, sizeof(desc));
-    if (!vr_backend_active()) {
+    /* Games call this with a NULL session to ask whether a headset is
+     * connected before they create one, so answer from OpenVR directly. */
+    if (!backend_up()) {
         desc.Type = ovrHmd_None;
         return desc;
     }
@@ -129,9 +156,12 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     desc.DisplayRefreshRate = 90.0f;
     desc.AvailableHmdCaps = desc.DefaultHmdCaps = 0;
     desc.AvailableTrackingCaps = desc.DefaultTrackingCaps = 0;
-    LOG("ovr_GetHmdDesc -> %dx%d, fov L %.2f/%.2f/%.2f/%.2f", desc.Resolution.w,
-        desc.Resolution.h, desc.DefaultEyeFov[0].UpTan, desc.DefaultEyeFov[0].DownTan,
-        desc.DefaultEyeFov[0].LeftTan, desc.DefaultEyeFov[0].RightTan);
+    static LONG logged;
+    if (!InterlockedExchange(&logged, 1))
+        LOG("ovr_GetHmdDesc -> CV1 %dx%d, fov L %.2f/%.2f/%.2f/%.2f",
+            desc.Resolution.w, desc.Resolution.h, desc.DefaultEyeFov[0].UpTan,
+            desc.DefaultEyeFov[0].DownTan, desc.DefaultEyeFov[0].LeftTan,
+            desc.DefaultEyeFov[0].RightTan);
     return desc;
 }
 
@@ -144,7 +174,7 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
         *session = NULL;
     if (!g_initialized)
         return set_error(ovrError_NotInitialized, "ovr_Initialize not called");
-    if (!vr_backend_init()) {
+    if (!vr_backend_active() && !vr_backend_init()) {
         LOG("ovr_Create -> ovrError_NoHmd (no SteamVR backend)");
         return set_error(ovrError_NoHmd, "No HMD / SteamVR not available");
     }
@@ -158,9 +188,12 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 EXPORT void ovr_Destroy(ovrSession session)
 {
     TRACE_FIRST();
-    if (session == &g_hmd) {
+    /* Only the session ends here. OpenVR stays connected until
+     * ovr_Shutdown: games commonly create and destroy a temporary session
+     * (UE4 does, to read the audio device ids) and then probe for the HMD
+     * with ovr_GetHmdDesc(NULL) before creating their real one. */
+    if (session == &g_hmd && g_hmd.active) {
         g_hmd.active = 0;
-        vr_backend_shutdown();
         LOG("ovr_Destroy");
     }
 }
@@ -171,7 +204,7 @@ EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *stat
     if (!status)
         return set_error(ovrError_InvalidParameter, "null status");
     memset(status, 0, sizeof(*status));
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     status->IsVisible = ovrTrue;
     status->HmdPresent = ovrTrue;
@@ -213,7 +246,7 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
     memset(&s, 0, sizeof(s));
     s.HeadPose.ThePose.Orientation.w = 1.0f;
     s.CalibratedOrigin.Orientation.w = 1.0f;
-    if (session == &g_hmd && vr_backend_active()) {
+    if (session_live(session)) {
         s.HeadPose = vr_backend_head_pose();
         s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
     }
@@ -512,7 +545,7 @@ EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevic
     TRACE_FIRST();
     if (out)
         *out = NULL;
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     if (!d3dDevice || !desc || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -702,7 +735,7 @@ EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
 {
     TRACE_FIRST();
     (void)frameIndex; (void)viewScaleDesc;
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     /* Old single-call frame model: block for poses, submit, present. */
     vr_backend_begin_frame();
@@ -722,7 +755,7 @@ EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
 {
     TRACE_FIRST();
     (void)frameIndex;
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     return vr_backend_begin_frame() ? ovrSuccess
         : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
@@ -732,7 +765,7 @@ EXPORT ovrResult ovr_BeginFrame(ovrSession session, long long frameIndex)
 {
     TRACE_FIRST();
     (void)frameIndex;
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     return ovrSuccess;
 }
@@ -744,7 +777,7 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
 {
     TRACE_FIRST();
     (void)frameIndex; (void)viewScaleDesc;
-    if (session != &g_hmd || !vr_backend_active())
+    if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
     return submit_layers(layerPtrList, layerCount);
