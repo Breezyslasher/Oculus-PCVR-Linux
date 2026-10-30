@@ -203,7 +203,10 @@ cd ~/Oculus-PCVR-Linux && make
 cd launcher && python3 -m ovrl gui
 ```
 
-Everything else happens in the page that opens: paste your access token
+It opens in its own window if Chrome, Chromium, Brave, Edge or Vivaldi is
+installed (Firefox gets a normal tab; `--tab` forces one), and closing that
+window stops it once any download in progress has finished.
+Everything else happens in the window: paste your access token
 (step 1 above) to log in, set the genuine `LibOVRRT64_1.dll` and your games
 folder in Settings (**Browse…** opens your file dialog), and press **Add to
 app menu** so next time you can start it from your desktop's menu with no

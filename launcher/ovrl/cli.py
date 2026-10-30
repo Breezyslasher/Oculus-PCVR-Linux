@@ -604,7 +604,7 @@ def cmd_update_shims(args: argparse.Namespace) -> int:
 
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
-    gui.serve(args.port, open_browser=not args.no_browser)
+    gui.serve(args.port, open_browser=not args.no_browser, tab=args.tab)
     return 0
 
 
@@ -753,6 +753,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--tab", action="store_true",
+                   help="open in a normal browser tab instead of its own window")
     s.set_defaults(func=cmd_gui)
 
     s = sub.add_parser("versions", help="list a Rift app's builds")

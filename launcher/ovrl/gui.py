@@ -192,7 +192,7 @@ def desktop_entry() -> Path:
         "[Desktop Entry]\nType=Application\nName=Oculus PC games (ovrl)\n"
         "Comment=Install your Oculus PC games and add them to Steam\n"
         f"Path={cli.REPO_ROOT / 'launcher'}\nExec=python3 -m ovrl gui\n"
-        "Icon=applications-games\nTerminal=false\nCategories=Game;\n")
+        "Icon=applications-games\nTerminal=false\nCategories=Game;\nStartupWMClass=ovrl\n")
     return path
 
 
@@ -330,7 +330,67 @@ poll();setInterval(poll,1000);
 </script></body></html>"""
 
 
-def serve(port: int = 8765, open_browser: bool = True) -> None:
+# Chromium-family browsers can show a page as its own app window (no tabs or
+# address bar). Firefox dropped that mode, so it gets a normal tab.
+APP_BROWSERS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                "brave-browser", "brave", "microsoft-edge", "microsoft-edge-stable",
+                "vivaldi", "vivaldi-stable"]
+APP_FLATPAKS = ["com.google.Chrome", "org.chromium.Chromium", "com.brave.Browser",
+                "com.microsoft.Edge", "com.vivaldi.Vivaldi", "io.github.ungoogled_software.ungoogled_chromium"]
+
+
+def _flatpak_apps() -> set[str]:
+    if not shutil.which("flatpak"):
+        return set()
+    r = subprocess.run(["flatpak", "list", "--app", "--columns=application"],
+                       capture_output=True, text=True)
+    return set(r.stdout.split())
+
+
+def open_window(url: str) -> subprocess.Popen | None:
+    """Open url as a standalone app window; returns the browser process.
+
+    A native browser gets its own profile under ~/.config/ovrl/window, so it
+    runs as a separate process we can watch: when it exits, the window was
+    closed. Returns None when only a normal browser tab could be opened.
+    """
+    args = [f"--app={url}", "--no-first-run", "--no-default-browser-check",
+            "--window-size=1060,900", "--class=ovrl"]
+    for name in APP_BROWSERS:
+        exe = shutil.which(name)
+        if exe:
+            profile = store.config_dir() / "window"
+            profile.mkdir(parents=True, exist_ok=True)
+            return subprocess.Popen([exe, f"--user-data-dir={profile}", *args],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    installed = _flatpak_apps()
+    for app in APP_FLATPAKS:
+        if app in installed:
+            # A sandboxed browser can't use our profile dir, so it joins its
+            # usual instance and we can't tell when the window closes.
+            subprocess.Popen(["flatpak", "run", app, *args],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return None
+    webbrowser.open(url)
+    return None
+
+
+def _quit_when_closed(proc: subprocess.Popen) -> None:
+    started = time.monotonic()
+    proc.wait()
+    if time.monotonic() - started < 3:
+        # It handed the window to an already-running browser; keep serving
+        # until Quit is pressed.
+        return
+    if any(j.get("status") in ("queued", "downloading") for j in S.jobs.values()) or S.busy:
+        print("window closed; finishing the running download/task first")
+        while any(j.get("status") in ("queued", "downloading") for j in S.jobs.values()) or S.busy:
+            time.sleep(2)
+    print("window closed; stopping")
+    S.server.shutdown()
+
+
+def serve(port: int = 8765, open_browser: bool = True, tab: bool = False) -> None:
     token = secrets.token_urlsafe(24)
     page = PAGE.replace("__TOKEN__", token).encode()
 
@@ -378,14 +438,18 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         # Already running (e.g. opened twice from the app menu): show that one.
         print(f"ovrl UI already running at {url}")
         if open_browser:
-            webbrowser.open(url)
+            webbrowser.open(url) if tab else open_window(url)
         return
     S.server = server
     print(f"ovrl UI at {url}  (Ctrl+C to stop)")
     if library.cached_library().get("apps"):
         _check_unknown()
-    if open_browser:
+    if open_browser and tab:
         threading.Timer(0.5, webbrowser.open, (url,)).start()
+    elif open_browser:
+        proc = open_window(url)
+        if proc:
+            threading.Thread(target=_quit_when_closed, args=(proc,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
