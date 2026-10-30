@@ -44,6 +44,19 @@ static DXGI_FORMAT dxgi_format(ovrTextureFormat fmt, unsigned misc)
              : DXGI_FORMAT_B8G8R8X8_UNORM;
     case OVR_FORMAT_R16G16B16A16_FLOAT:
         return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case OVR_FORMAT_R11G11B10_FLOAT:
+        return DXGI_FORMAT_R11G11B10_FLOAT;
+    /* Depth chains (Unreal and newer Unity ask for one per eye buffer). A
+     * typeless one lets the game view it both as depth and as a shader
+     * input; otherwise it gets the exact depth format. */
+    case OVR_FORMAT_D16_UNORM:
+        return typeless ? DXGI_FORMAT_R16_TYPELESS : DXGI_FORMAT_D16_UNORM;
+    case OVR_FORMAT_D24_UNORM_S8_UINT:
+        return typeless ? DXGI_FORMAT_R24G8_TYPELESS : DXGI_FORMAT_D24_UNORM_S8_UINT;
+    case OVR_FORMAT_D32_FLOAT:
+        return typeless ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_D32_FLOAT;
+    case OVR_FORMAT_D32_FLOAT_S8X24_UINT:
+        return typeless ? DXGI_FORMAT_R32G8X24_TYPELESS : DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     default:
         return typeless ? DXGI_FORMAT_R8G8B8A8_TYPELESS : DXGI_FORMAT_R8G8B8A8_UNORM;
     }
@@ -117,6 +130,10 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
     td.SampleDesc.Count = desc->SampleCount > 0 ? desc->SampleCount : 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = bind_flags(desc->BindFlags);
+    /* A typed depth format can't also be a shader resource. */
+    if ((desc->BindFlags & ovrTextureBind_DX_DepthStencil) &&
+        !(desc->MiscFlags & ovrTextureMisc_DX_Typeless))
+        td.BindFlags &= ~(UINT)D3D11_BIND_SHADER_RESOURCE;
     /* Shared so SteamVR's out-of-process compositor can open the texture. */
     td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
     /* Under Proton the compositor reads textures in-process through DXVK, so

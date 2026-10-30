@@ -476,6 +476,15 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
  * "default device" GUID never matches, so it logged an error each frame. */
 static int default_endpoint_guid(int flow, GUID *out)
 {
+    /* OVRSTUB_AUDIO_GUID=default reports DirectSound's generic default
+     * device instead, as builds before ffd414c did (a test switch: The
+     * Eastern Edge's first level started hanging around that change). */
+    const char *mode = getenv("OVRSTUB_AUDIO_GUID");
+    if (mode && !strcmp(mode, "default")) {
+        LOG("OVRSTUB_AUDIO_GUID=default: reporting the generic default %s device",
+            flow == eRender ? "output" : "input");
+        return 0;
+    }
     wchar_t id[OVR_AUDIO_MAX_DEVICE_STR_SIZE];
     default_endpoint_id(flow, id);
     wchar_t *brace = wcsrchr(id, L'{');
