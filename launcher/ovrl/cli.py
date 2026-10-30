@@ -118,6 +118,25 @@ def cmd_stubs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_openvr_api(override: str | None) -> Path | None:
+    """Locate SteamVR's 64-bit Windows openvr_api.dll."""
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    steam_roots = [
+        Path.home() / ".steam/steam",
+        Path.home() / ".local/share/Steam",
+        Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
+    ]
+    # Steam libraries can live elsewhere; also scan common library folders.
+    rel = Path("steamapps/common/SteamVR/bin/win64/openvr_api.dll")
+    for root in steam_roots:
+        cand = root / rel
+        if cand.is_file():
+            return cand
+    return None
+
+
 def cmd_prefix_setup(args: argparse.Namespace) -> int:
     """Lay out a fake Oculus install in the prefix and register it.
 
@@ -140,6 +159,18 @@ def cmd_prefix_setup(args: argparse.Namespace) -> int:
     shutil.copy2(_build_file(build, PLATFORM_DLL), runtime_dir / PLATFORM_DLL)
     shutil.copy2(_build_file(build, INJECTOR), base / INJECTOR)
     print(f"copied shim, Platform stub and injector to {base}")
+
+    # The shim renders through OpenVR, which needs openvr_api.dll. Proton only
+    # puts it on the search path for Steam VR apps, so copy SteamVR's own
+    # Windows build next to the shim; vr_backend loads it by full path.
+    openvr = _find_openvr_api(args.openvr)
+    if openvr:
+        shutil.copy2(openvr, runtime_dir / "openvr_api.dll")
+        print(f"copied openvr_api.dll from {openvr}")
+    else:
+        print("ovrl: warning: openvr_api.dll not found; VR output will be "
+              "unavailable until it is present. Pass --openvr <path> or "
+              "install SteamVR.", file=sys.stderr)
 
     env = dict(os.environ, WINEPREFIX=str(wine_prefix))
     for view in ("/reg:32", "/reg:64"):
@@ -281,6 +312,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("prefix-setup", help="install the LibOVR shim into a Wine/Proton prefix")
     s.add_argument("prefix", help="Proton compatdata dir or Wine prefix")
     s.add_argument("--wine", default="wine", help="wine binary to run `reg` with")
+    s.add_argument("--openvr", metavar="openvr_api.dll",
+                   help="path to SteamVR's openvr_api.dll (auto-detected if omitted)")
     s.set_defaults(func=cmd_prefix_setup)
 
     s = sub.add_parser("launch", help="launch a game through the injector")

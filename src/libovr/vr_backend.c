@@ -42,15 +42,43 @@ static void *resolve(HMODULE m, const char *name)
     return (void *)GetProcAddress(m, name);
 }
 
+/* Load openvr_api.dll. Launched via `proton run` (not as a Steam VR app),
+ * Proton doesn't put it on the DLL search path, so after the bare name we
+ * also try a copy next to this shim, which ovrl prefix-setup places there. */
+static HMODULE load_openvr_api(void)
+{
+    HMODULE m = LoadLibraryW(L"openvr_api.dll");
+    if (m)
+        return m;
+
+    HMODULE self = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCWSTR)(void *)&load_openvr_api, &self);
+    WCHAR path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')
+        n--;
+    path[n] = 0;
+    if (wcslen(path) + 15 < MAX_PATH) {
+        wcscat(path, L"openvr_api.dll");
+        m = LoadLibraryW(path);
+        if (m)
+            LOG("loaded openvr_api.dll from %ls", path);
+    }
+    return m;
+}
+
 bool vr_backend_init(void)
 {
     if (g_active)
         return true;
 
-    HMODULE ovr = LoadLibraryW(L"openvr_api.dll");
+    HMODULE ovr = load_openvr_api();
     if (!ovr) {
-        LOG("openvr_api.dll not found (error %lu); no SteamVR backend",
-            GetLastError());
+        LOG("openvr_api.dll not found (error %lu); no SteamVR backend. "
+            "Run `ovrl prefix-setup` with SteamVR installed so it is copied "
+            "into the prefix.", GetLastError());
         return false;
     }
     p_InitInternal = (VR_InitInternal_t)resolve(ovr, "VR_InitInternal");
