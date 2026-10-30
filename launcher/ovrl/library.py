@@ -198,14 +198,15 @@ def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
 
     Unreal ships a small bootstrap exe at the root that relaunches the real
     <Project>/Binaries/Win64/*-Shipping.exe; injecting into the bootstrap
-    would miss the game, so pick the shipping exe and pass -hmd=OculusRift.
+    would miss the game, so pick the shipping exe and pass the -hmd= name
+    its Oculus plugin answers to (see cli.unreal_hmd_name).
     Unity's exe sits beside <exe>_Data and takes no -hmd.
     """
     if (dest / "Engine").is_dir():
         shipping = sorted(p for p in dest.glob("*/Binaries/Win64/*-Shipping.exe")
                           if p.parts[-4] != "Engine")
         if shipping:
-            return shipping[0], "OculusRift", "Unreal"
+            return shipping[0], cli.unreal_hmd_name(dest), "Unreal"
     launch = manifest.get("launchFile") or ""
     exe = dest / launch if launch else None
     if not exe or not exe.is_file():

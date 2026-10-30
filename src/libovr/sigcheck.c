@@ -38,6 +38,10 @@ typedef CRYPT_PROVIDER_SGNR *(WINAPI *WTHelperGetProvSignerFromChain_t)(
 static WTHelperProvDataFromStateData_t real_ProvDataFromStateData;
 static WTHelperGetProvSignerFromChain_t real_GetProvSignerFromChain;
 static int g_enabled = 1;
+/* The provider state of the last genuine LibOVR file that the real
+ * WinVerifyTrust reported trusted, and the provider data behind it. */
+static HANDLE g_trusted_state;
+static CRYPT_PROVIDER_DATA *g_trusted_cpd;
 
 /* True only for a file that is actually one of our stubs (carries the build
  * marker). A genuine Meta file at the same name is NOT a stub: it must go
@@ -126,15 +130,20 @@ static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
     LONG r = real_WinVerifyTrust(hwnd, action, pdata);
     /* Log the real result for a genuine LibOVR file so we can see whether
      * Wine accepted Meta's certificate (0 = trusted). */
-    if (is_libovr_named(file) && data && data->dwStateAction == WTD_STATEACTION_VERIFY)
+    if (is_libovr_named(file) && data && data->dwStateAction == WTD_STATEACTION_VERIFY) {
         LOG("real WinVerifyTrust(%ls) -> 0x%08lx%s", file, (unsigned long)r,
             r == 0 ? " (trusted)" : "");
+        g_trusted_state = r == 0 ? data->hWVTStateData : NULL;
+        g_trusted_cpd = NULL;
+    }
     return r;
 }
 
 static CRYPT_PROVIDER_DATA *WINAPI hook_ProvDataFromStateData(HANDLE h)
 {
     CRYPT_PROVIDER_DATA *cpd = real_ProvDataFromStateData(h);
+    if (cpd && h && h == g_trusted_state)
+        g_trusted_cpd = cpd;
     if (cpd)
         LOG("WTHelperProvDataFromStateData -> csSigners=%lu",
             (unsigned long)cpd->csSigners);
@@ -159,10 +168,31 @@ static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DA
         "(game wants exactly 3)", (unsigned long)idxSigner,
         (unsigned long)cps->csCertChain);
     /* The game's ValidateCertificateContents walks pasCertChain and rejects
-     * any test cert or untrusted self-signed root. Log each cert's flags so
-     * we can see which one it refuses. */
+     * any test cert or untrusted self-signed root. Wine fills in only some
+     * of each entry's fields (it never sets fTestCert, for one), and the
+     * rest can hold leftover heap data: the same genuine runtime that passes
+     * one check then reads as a "test cert" on the next (seen as
+     * fTestCert=4096 dwError=0x10 in Lost, Google Earth VR and Minecraft).
+     * For a chain the real WinVerifyTrust just reported trusted, set those
+     * fields to what Windows reports for that chain: not a test or
+     * commercial-test cert, not revoked, no per-cert error, and self-signed
+     * only where the subject is its own issuer. The certificates themselves
+     * and the trust decision are Wine's, unchanged. */
+    int fix = g_enabled && cpd && cpd == g_trusted_cpd;
     for (DWORD i = 0; i < cps->csCertChain && cps->pasCertChain; i++) {
         CRYPT_PROVIDER_CERT *pc = &cps->pasCertChain[i];
+        if (fix && pc->pCert && pc->pCert->pCertInfo) {
+            if (pc->fTestCert || pc->dwError || pc->fCommercial || pc->dwRevokedReason)
+                LOG("  cert[%lu]: clearing uninitialized fields Wine left set "
+                    "(fTestCert=%d dwError=0x%lx)", (unsigned long)i,
+                    (int)pc->fTestCert, (unsigned long)pc->dwError);
+            pc->fCommercial = FALSE;
+            pc->fTestCert = FALSE;
+            pc->dwRevokedReason = 0;
+            pc->dwError = 0;
+            pc->fSelfSigned = CertCompareCertificateName(X509_ASN_ENCODING,
+                &pc->pCert->pCertInfo->Subject, &pc->pCert->pCertInfo->Issuer);
+        }
         LOG("  cert[%lu]: fSelfSigned=%d fTrustedRoot=%d fTestCert=%d "
             "dwError=0x%lx dwConfidence=0x%lx", (unsigned long)i,
             (int)pc->fSelfSigned, (int)pc->fTrustedRoot, (int)pc->fTestCert,

@@ -296,7 +296,7 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     # to `proton run <target.exe>`. A leading VAR=val sets an env var that
     # reaches the Wine process; everything after %command% is passed to the
     # injector. Relative names resolve against the shortcut's "Start In" dir.
-    launch_opts = _steam_launch_options(exe, args.hmd)
+    launch_opts = _steam_launch_options(exe, _auto_hmd(exe, args.hmd))
     target = exe_dir / INJECTOR
     print("\nAdd the game to Steam as a non-Steam game, then in its Properties:")
     print(f"  Target / exe : {target}")
@@ -490,12 +490,36 @@ def add_shortcuts(games: list[dict], prefix: str | None = None,
 
 def cmd_add_to_steam(args: argparse.Namespace) -> int:
     """Write the non-Steam shortcut and Proton mapping for one staged game."""
-    add_shortcuts([{"exe": args.game_exe, "name": args.name, "hmd": args.hmd}],
+    add_shortcuts([{"exe": args.game_exe, "name": args.name,
+                    "hmd": _auto_hmd(Path(args.game_exe), args.hmd)}],
                   prefix=args.prefix, proton_tool=args.proton_tool,
                   steam_root=args.steam_root, steam_user=args.steam_user)
     name = args.name or Path(args.game_exe).stem.replace("-Win64-Shipping", "")
     print(f"\nStart Steam: \"{name}\" is in your library. Start SteamVR, then Play.")
     return 0
+
+
+def unreal_hmd_name(game_root: Path) -> str:
+    """The -hmd= value that selects an Unreal game's Oculus plugin.
+
+    Unreal starts only the VR plugin whose name matches -hmd=. Older engines
+    (4.1x) ship Engine/Plugins/Runtime/OculusRift, named "OculusRift"; from
+    4.18 the plugin lives in Engine/Plugins/Runtime/Oculus/OculusVR and its
+    module is "OculusHMD", so -hmd=OculusRift would match nothing there.
+    """
+    if (game_root / "Engine/Plugins/Runtime/Oculus/OculusVR").is_dir():
+        return "OculusHMD"
+    return "OculusRift"
+
+
+def _auto_hmd(exe: Path, hmd: str | None) -> str | None:
+    """Resolve --hmd auto from the game folder (Unreal only; else none)."""
+    if hmd != "auto":
+        return hmd
+    for parent in exe.resolve().parents:
+        if (parent / "Engine").is_dir():
+            return unreal_hmd_name(parent)
+    return ""
 
 
 def stage_game(exe: Path, build: Path, real_runtime: str | None,
@@ -694,9 +718,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="genuine Meta-signed Platform SDK (the stub is used otherwise)")
     s.add_argument("--openvr", metavar="openvr_api.dll",
                    help="path to SteamVR's openvr_api.dll (auto-detected if omitted)")
-    s.add_argument("--hmd", default="OculusRift",
-                   help="value for the game's -hmd arg (default: %(default)s; "
-                        "pass empty to omit)")
+    s.add_argument("--hmd", default="auto",
+                   help="value for the game's -hmd arg (default: auto: "
+                        "OculusRift or OculusHMD for Unreal games by engine "
+                        "version, none otherwise; pass empty to omit)")
     s.set_defaults(func=cmd_steam_setup)
 
     s = sub.add_parser("add-to-steam",
@@ -704,8 +729,9 @@ def build_parser() -> argparse.ArgumentParser:
                             "Steam's config (run steam-setup first; Steam closed)")
     s.add_argument("game_exe", help="the game's .exe (as given to steam-setup)")
     s.add_argument("--name", help="library name (default: derived from the exe)")
-    s.add_argument("--hmd", default="OculusRift",
-                   help="value for the game's -hmd arg (default: %(default)s)")
+    s.add_argument("--hmd", default="auto",
+                   help="value for the game's -hmd arg (default: auto, as "
+                        "for steam-setup)")
     s.add_argument("--proton-tool", metavar="NAME",
                    help="compat tool name, e.g. proton_10 (default: reuse the one "
                         "your other games are mapped to)")

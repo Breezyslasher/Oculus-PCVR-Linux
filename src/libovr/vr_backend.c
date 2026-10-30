@@ -43,30 +43,31 @@ static void *resolve(HMODULE m, const char *name)
     return (void *)GetProcAddress(m, name);
 }
 
-/* Load openvr_api.dll. Launched via `proton run` (not as a Steam VR app),
- * Proton doesn't put it on the DLL search path, so after the bare name we
- * also try a copy next to this shim, which ovrl prefix-setup places there. */
+/* Load openvr_api.dll. Prefer the copy next to this shim: ovrl places
+ * SteamVR's current one there (beside the game exe for Steam launches, in the
+ * prefix for `proton run`). A bare-name load could instead return a copy the
+ * game itself ships and already loaded (Unity's OpenVR XR plugin bundles
+ * one), whose age can make the interface lookups below fail. */
 static HMODULE load_openvr_api(void)
 {
-    HMODULE m = LoadLibraryW(L"openvr_api.dll");
-    if (m)
-        return m;
-
-    HMODULE self = NULL;
+    HMODULE m = NULL, self = NULL;
+    WCHAR path[MAX_PATH];
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        (LPCWSTR)(void *)&load_openvr_api, &self);
-    WCHAR path[MAX_PATH];
     DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
     while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')
         n--;
     path[n] = 0;
-    if (wcslen(path) + 15 < MAX_PATH) {
+    if (n && wcslen(path) + 15 < MAX_PATH) {
         wcscat(path, L"openvr_api.dll");
-        m = LoadLibraryW(path);
-        if (m)
-            LOG("loaded openvr_api.dll from %ls", path);
+        if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
+            m = LoadLibraryW(path);
     }
+    if (!m)
+        m = LoadLibraryW(L"openvr_api.dll");
+    if (m && GetModuleFileNameW(m, path, MAX_PATH))
+        LOG("using %ls", path);
     return m;
 }
 
@@ -111,9 +112,10 @@ bool vr_backend_init(void)
     snprintf(name, sizeof(name), "FnTable:%s", IVRCompositor_Version);
     g_compositor = (struct VR_IVRCompositor_FnTable *)p_GetGenericInterface(name, &err2);
     if (!g_system || !g_compositor) {
-        LOG("could not get OpenVR interfaces (%s / %s); system=%p compositor=%p",
-            IVRSystem_Version, IVRCompositor_Version, (void *)g_system,
-            (void *)g_compositor);
+        LOG("could not get OpenVR interfaces (%s: %s / %s: %s); system=%p compositor=%p",
+            IVRSystem_Version, p_GetErrDesc ? p_GetErrDesc(err) : "?",
+            IVRCompositor_Version, p_GetErrDesc ? p_GetErrDesc(err2) : "?",
+            (void *)g_system, (void *)g_compositor);
         p_ShutdownInternal();
         return false;
     }
