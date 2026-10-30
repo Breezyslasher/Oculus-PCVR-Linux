@@ -929,7 +929,8 @@ EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameInd
 EXPORT ovrBool ovr_GetBool(ovrSession s, const char *name, ovrBool def)
 {
     TRACE_FIRST();
-    (void)s; (void)name;
+    (void)s;
+    log_property("ovr_GetBool", name);
     return def;
 }
 
@@ -943,7 +944,8 @@ EXPORT ovrBool ovr_SetBool(ovrSession s, const char *name, ovrBool v)
 EXPORT int ovr_GetInt(ovrSession s, const char *name, int def)
 {
     TRACE_FIRST();
-    (void)s; (void)name;
+    (void)s;
+    log_property("ovr_GetInt", name);
     return def;
 }
 
@@ -954,10 +956,28 @@ EXPORT ovrBool ovr_SetInt(ovrSession s, const char *name, int v)
     return ovrFalse;
 }
 
+/* Log the first few property lookups by name, so we know what a game asks. */
+static void log_property(const char *fn, const char *name)
+{
+    static LONG n;
+    if (InterlockedIncrement(&n) <= 40)
+        LOG("%s(\"%s\")", fn, name ? name : "(null)");
+}
+
+/* LibOVR's built-in user-profile defaults (OVR_CAPI_Keys.h). */
 EXPORT float ovr_GetFloat(ovrSession s, const char *name, float def)
 {
     TRACE_FIRST();
-    (void)s; (void)name;
+    (void)s;
+    log_property("ovr_GetFloat", name);
+    if (!name)
+        return def;
+    if (!strcmp(name, "PlayerHeight"))
+        return 1.778f;
+    if (!strcmp(name, "EyeHeight"))
+        return 1.675f;
+    if (!strcmp(name, "IPD"))
+        return 0.064f;
     return def;
 }
 
@@ -972,8 +992,26 @@ EXPORT unsigned ovr_GetFloatArray(ovrSession s, const char *name, float *v,
                                   unsigned cap)
 {
     TRACE_FIRST();
-    (void)s; (void)name; (void)v; (void)cap;
-    return 0;
+    (void)s;
+    log_property("ovr_GetFloatArray", name);
+    if (!name || !v)
+        return 0;
+    const float *src = NULL;
+    unsigned n = 0;
+    static const float neck_eye[2] = {0.0805f, 0.075f};   /* horizontal, vertical */
+    static const float eye_nose[2] = {0.0315f, 0.0315f};  /* left, right */
+    if (!strcmp(name, "NeckEyeDistance")) {
+        src = neck_eye;
+        n = 2;
+    } else if (!strcmp(name, "EyeToNoseDist")) {
+        src = eye_nose;
+        n = 2;
+    }
+    if (n > cap)
+        n = cap;
+    for (unsigned i = 0; i < n; i++)
+        v[i] = src[i];
+    return n;
 }
 
 EXPORT ovrBool ovr_SetFloatArray(ovrSession s, const char *name, const float *v,
@@ -987,7 +1025,8 @@ EXPORT ovrBool ovr_SetFloatArray(ovrSession s, const char *name, const float *v,
 EXPORT const char *ovr_GetString(ovrSession s, const char *name, const char *def)
 {
     TRACE_FIRST();
-    (void)s; (void)name;
+    (void)s;
+    log_property("ovr_GetString", name);
     return def;
 }
 
