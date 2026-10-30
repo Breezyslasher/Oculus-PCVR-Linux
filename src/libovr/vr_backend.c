@@ -473,6 +473,16 @@ void vr_backend_log_compositor_state(long frame)
         g_compositor->GetLastFrameRenderer ? g_compositor->GetLastFrameRenderer() : 0,
         (unsigned long)GetCurrentProcessId(), have ? "" : " (no timing)",
         t.m_nNumFramePresents, t.m_nNumDroppedFrames, t.m_nNumMisPresented);
+    /* Totals since we connected: how often SteamVR had to show an old
+     * frame (dropped) or synthesize one (reprojected) because ours was late. */
+    if (g_compositor->GetCumulativeStats) {
+        struct Compositor_CumulativeStats c;
+        memset(&c, 0, sizeof(c));
+        g_compositor->GetCumulativeStats(&c, sizeof(c));
+        LOG("frame %ld: totals presents=%u dropped=%u reprojected=%u timed-out=%u "
+            "submits=%u", frame, c.m_nNumFramePresents, c.m_nNumDroppedFrames,
+            c.m_nNumReprojectedFrames, c.m_nNumTimedOut, c.m_nNumFrameSubmits);
+    }
 }
 
 void vr_backend_present(void)

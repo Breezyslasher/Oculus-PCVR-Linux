@@ -879,6 +879,30 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
         }
     static LONG frames_;
     LONG f = InterlockedIncrement(&frames_);
+    /* Frame pacing: time between submits, summarised every 900 frames. A
+     * game that misses the display's frame time forces SteamVR to
+     * reproject, which looks like judder in the headset only. */
+    static double last_submit, max_gap, sum_gap;
+    static int late, gaps;
+    double t = ovr_GetTimeInSeconds();
+    if (last_submit > 0.0) {
+        double gap = t - last_submit;
+        double budget = 1.0 / vr_backend_display_hz();
+        sum_gap += gap;
+        gaps++;
+        if (gap > max_gap)
+            max_gap = gap;
+        if (gap > budget * 1.5)
+            late++;
+    }
+    last_submit = t;
+    if (f % 900 == 0 && gaps) {
+        LOG("frame %ld: pacing avg %.1f ms, worst %.1f ms, %d of %d frames late "
+            "(budget %.1f ms at %.0f Hz)", f, 1000.0 * sum_gap / gaps, 1000.0 * max_gap,
+            late, gaps, 1000.0 / vr_backend_display_hz(), vr_backend_display_hz());
+        max_gap = sum_gap = 0.0;
+        late = gaps = 0;
+    }
     if (f <= 3 || f % 900 == 0)
         LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
     if (f == 1 || f == 90 || f == 300 || f % 900 == 0) {
