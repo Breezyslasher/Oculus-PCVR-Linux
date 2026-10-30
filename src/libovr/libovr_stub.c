@@ -777,6 +777,24 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
         }
     }
     vr_backend_present();
+    static int preclear = -1;
+    if (preclear < 0) {
+        const char *pc = getenv("OVRSTUB_PRECLEAR");
+        preclear = pc && *pc == '1';
+        if (preclear)
+            LOG("OVRSTUB_PRECLEAR: marking the next render buffer dark green "
+                "(ff004000 in the probe = the game never wrote it)");
+    }
+    if (preclear)
+        for (unsigned i = 0; i < count; i++) {
+            const ovrLayerHeader *h = layers ? layers[i] : NULL;
+            if (h && h->Type == ovrLayerType_EyeFov) {
+                const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
+                swapchain_d3d_preclear_next(l->ColorTexture[0]);
+                if (l->ColorTexture[1] && l->ColorTexture[1] != l->ColorTexture[0])
+                    swapchain_d3d_preclear_next(l->ColorTexture[1]);
+            }
+        }
     static LONG frames_;
     LONG f = InterlockedIncrement(&frames_);
     if (f <= 3 || f % 900 == 0)

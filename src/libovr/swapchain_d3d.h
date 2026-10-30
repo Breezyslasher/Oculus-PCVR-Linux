@@ -38,5 +38,9 @@ void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye);
  * in the chain (marking the one we submit), to tell "the game draws into a
  * different buffer" from "the game draws nothing". */
 void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame);
+/* Debug aid (OVRSTUB_PRECLEAR=1): clear the buffer the game renders into
+ * next to a marker color, so a probe can tell "never written" (marker) from
+ * "written black" (zeros). */
+void swapchain_d3d_preclear_next(ovrTextureSwapChain chain);
 
 #endif

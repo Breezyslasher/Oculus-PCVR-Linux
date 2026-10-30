@@ -186,12 +186,31 @@ static DXGI_FORMAT typed_format(DXGI_FORMAT f)
     }
 }
 
+static void clear_texture(struct ovrTextureSwapChainData *c, ID3D11Texture2D *tex,
+                          const float color[4]);
+
 void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
     if (!c)
         return;
-    ID3D11Texture2D *tex = swapchain_d3d_submit_texture(chain);
+    /* Magenta for the left eye, cyan for the right. */
+    const float colors[2][4] = {{1, 0, 1, 1}, {0, 1, 1, 1}};
+    clear_texture(c, swapchain_d3d_submit_texture(chain), colors[eye & 1]);
+}
+
+void swapchain_d3d_preclear_next(ovrTextureSwapChain chain)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c)
+        return;
+    const float marker[4] = {0.0f, 0.25f, 0.0f, 1.0f};  /* dark green */
+    clear_texture(c, c->textures[c->index], marker);
+}
+
+static void clear_texture(struct ovrTextureSwapChainData *c, ID3D11Texture2D *tex,
+                          const float color[4])
+{
     if (!tex)
         return;
     ID3D11Device *dev = NULL;
@@ -207,15 +226,13 @@ void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
     ID3D11RenderTargetView *rtv = NULL;
     HRESULT hr = ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)tex, &rd, &rtv);
     if (SUCCEEDED(hr) && ctx) {
-        /* Magenta for the left eye, cyan for the right. */
-        const float colors[2][4] = {{1, 0, 1, 1}, {0, 1, 1, 1}};
-        ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, colors[eye & 1]);
+        ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, color);
         ID3D11DeviceContext_Flush(ctx);
         ID3D11RenderTargetView_Release(rtv);
     } else {
         static int warned;
         if (!warned++)
-            LOG("test pattern: CreateRenderTargetView failed (hr 0x%08lx)",
+            LOG("clear: CreateRenderTargetView failed (hr 0x%08lx)",
                 (unsigned long)hr);
     }
     if (ctx)
