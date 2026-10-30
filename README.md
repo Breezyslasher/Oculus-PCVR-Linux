@@ -130,14 +130,15 @@ a new game doesn't reach its menu.
 
 **Status:** *The Eastern Edge* (Unity 2017.4, Oculus SDK 1.37) is playable this
 way: it renders in the headset with head tracking and Touch-style controller
-input, on Linux Mint with Proton 10 and a Quest 3 via SteamVR.
+input, on Linux Mint with Proton 11 and a Quest 3 via SteamVR.
 *Spider-Man: Homecoming VR* (Unreal 4.14, SDK 1.8) gets a VR session and
 submits frames, but renders black (even flat with `-nohmd`), so that one is
 blocked on the game itself rather than the shim.
 
-Use the same Proton version that created the prefix. In the tests, Proton 9
-failed the game's signature check in a prefix made by Proton 10.
-`add-to-steam --prefix` now picks the matching version when Steam has it.
+Use a Proton at least as new as the one that created the prefix. In the
+tests, Proton 9 failed the game's signature check in a prefix made by Proton
+10; Proton 10 and 11 both pass. `add-to-steam --prefix` picks the version
+recorded in the prefix when Steam has a tool by that name.
 
 `ovrl launch` runs the game under a bare `proton run`, which is enough to
 reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
