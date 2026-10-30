@@ -65,6 +65,20 @@ file as things get confirmed or disproved on real games.
   is probably the signer name for the runtime signature check; whether that
   check blocks our unsigned DLL is the next thing to find out.
 
+- With `LIBOVR_DLL_DIR` set and the HMD event present, the game searched for
+  a **bare `LibOVRRT64_1.dll`** on the standard DLL search path (exe folder,
+  cwd, system dirs, PATH) and never looked in the `LIBOVR_DLL_DIR` folder.
+  Putting the stubs **next to the game exe** got them found: the trace then
+  showed the game `CreateFileW`-opening both stubs.
+- But it opened the files without loading them: the loaders call
+  **`WinVerifyTrust`** on the DLL first and only load it if signed. Our
+  unsigned stubs returned `TRUST_E_NOSIGNATURE` (0x800B0100). The shim now
+  hooks `WinVerifyTrust` (via a `GetProcAddress` hook, since the game resolves
+  wintrust at run time) and reports success for our two stub file names only;
+  all other files verify normally. `OVRSTUB_FAKE_SIGNATURE=0` disables it.
+  Loaders that also compare the signer name/thumbprint against Meta's real
+  cert would still reject it; the sigcheck trace shows what each game calls.
+
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 
 - Unity games ship it in the game folder, so the stub can replace it there

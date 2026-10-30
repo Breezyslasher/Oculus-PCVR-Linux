@@ -18,6 +18,7 @@
 #include "../common/log.h"
 #include "iat_hook.h"
 #include "ovr_types.h"
+#include "sigcheck.h"
 
 #define EXPORT __declspec(dllexport)
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
@@ -368,6 +369,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         QueryPerformanceFrequency(&g_qpc_freq);
         LOG("loaded (no-HMD stub)");
         create_hmd_connected_event();
+        sigcheck_install();
         redirect_install(inst);
     }
     return TRUE;

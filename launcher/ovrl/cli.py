@@ -47,24 +47,39 @@ def _wine_prefix(prefix: Path) -> Path:
 
 
 def cmd_stubs(args: argparse.Namespace) -> int:
+    # The LibOVR loader searches the exe's own folder for a bare
+    # LibOVRRT64_1.dll (and the Platform SDK beside it), so both stubs go in
+    # the game's Binaries directory. Any real file found there is backed up.
     game_dir = Path(args.game_dir)
-    target = game_dir / PLATFORM_DLL
-    backup = game_dir / (PLATFORM_DLL + BACKUP_SUFFIX)
+    if not game_dir.is_dir():
+        sys.exit(f"ovrl: {game_dir} is not a directory")
+    stubs = [RUNTIME_DLL, PLATFORM_DLL]
 
     if args.action == "install":
-        if not target.exists():
-            print(f"ovrl: warning: {target} does not exist; this game may not "
-                  "use the Platform SDK", file=sys.stderr)
-        elif not backup.exists():
-            shutil.copy2(target, backup)
-            print(f"backed up original to {backup}")
-        shutil.copy2(_build_file(Path(args.build), PLATFORM_DLL), target)
-        print(f"installed stub {target}")
+        build = Path(args.build)
+        for name in stubs:
+            target = game_dir / name
+            backup = game_dir / (name + BACKUP_SUFFIX)
+            if target.exists() and not backup.exists():
+                shutil.copy2(target, backup)
+                print(f"backed up original to {backup}")
+            shutil.copy2(_build_file(build, name), target)
+            print(f"installed stub {target}")
     else:
-        if not backup.exists():
-            sys.exit(f"ovrl: no backup at {backup}")
-        shutil.move(backup, target)
-        print(f"restored {target}")
+        restored = False
+        for name in stubs:
+            target = game_dir / name
+            backup = game_dir / (name + BACKUP_SUFFIX)
+            if backup.exists():
+                shutil.move(str(backup), str(target))
+                print(f"restored {target}")
+                restored = True
+            elif target.exists():
+                target.unlink()
+                print(f"removed stub {target} (no original to restore)")
+                restored = True
+        if not restored:
+            print(f"ovrl: nothing to restore in {game_dir}", file=sys.stderr)
     return 0
 
 
@@ -217,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="directory with the built DLLs (default: %(default)s)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("stubs", help="install/restore the Platform SDK stub in a game folder")
+    s = sub.add_parser("stubs", help="install/restore both stub DLLs in a game's exe folder")
     s.add_argument("action", choices=["install", "restore"])
     s.add_argument("game_dir")
     s.set_defaults(func=cmd_stubs)

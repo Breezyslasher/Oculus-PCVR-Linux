@@ -86,48 +86,42 @@ again. `OVRL_TOKEN=... ovrl ...` also works without saving the token.
 
 ## Try it on a game (Milestone 2: boot to menu)
 
-Assumes the game is already downloaded (see above) and has a Proton prefix, e.g. after adding the exe to Steam as a
-non-Steam game and launching it once.
+Assumes the game is already downloaded (see above) and has a Proton prefix,
+e.g. after adding the exe to Steam as a non-Steam game and launching it once,
+or by creating one as below.
 
 ```sh
+GAME=/path/to/Game/Binaries/Win64        # the folder with the real game exe
+P=~/.local/share/ovrl/prefixes/mygame    # a Proton compatdata dir
+PROTON=~/.steam/steam/steamapps/common/"Proton 10.0"
+
 cd launcher
-# Swap in the Platform stub (keeps a backup as *.ovrl-orig)
-python3 -m ovrl stubs install "/path/to/Game"
+# Put both stubs next to the game exe (keeps backups as *.ovrl-orig). The
+# LibOVR loader searches the exe folder for a bare LibOVRRT64_1.dll.
+python3 -m ovrl stubs install "$GAME"
 
-# Put the LibOVR shim into the prefix and register a fake Oculus install
-python3 -m ovrl prefix-setup ~/.steam/steam/steamapps/compatdata/<id> \
-    --wine ~/.steam/steam/steamapps/common/"Proton - Experimental"/files/bin/wine64
+# Install the shim into the prefix and register a fake Oculus install
+python3 -m ovrl prefix-setup "$P" --wine "$PROTON/files/bin/wine"
 
-# Launch through the injector
-python3 -m ovrl launch ~/.steam/steam/steamapps/compatdata/<id> \
-    --proton ~/.steam/steam/steamapps/common/"Proton - Experimental" \
-    "/path/to/Game/Game.exe"
+# Launch through the injector. Unreal games also need -hmd=OculusRift so the
+# engine skips its built-in SteamVR plugin (whose openvr_api.dll is absent).
+python3 -m ovrl launch "$P" --proton "$PROTON" "$GAME/Game.exe" -hmd=OculusRift
 
-# Undo the Platform stub
-python3 -m ovrl stubs restore "/path/to/Game"
+# Undo the stubs
+python3 -m ovrl stubs restore "$GAME"
 ```
 
 Logs go to stderr and to `ovrstub.log` next to the game exe (or wherever
-`OVRSTUB_LOG` points). If a game ignores the entitlement reply, the message
-type IDs are the likely cause. See the research notes for how to check them.
-
-### Stub environment variables
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `OVRSTUB_USER_ID` | `1` | User ID reported to the game |
-| `OVRSTUB_USER_NAME` | `LinuxPlayer` | Oculus ID / display name |
-| `OVRSTUB_LOCALE` | `en_US` | `ovr_GetLoggedInUserLocale` |
-| `OVRSTUB_MSGTYPE_ENTITLEMENT`, `..._USER_GET_LOGGED_IN_USER`, `..._USER_GET`, `..._PLATFORM_INITIALIZE_WINDOWS_ASYNC` | see `platform_types.h` | Override a message type ID |
-| `OVRSTUB_LOG` | unset | Also append logs to this file |
-| `OVRSTUB_HMD_CONNECTED` | `1` | `0` leaves the `OculusHMDConnected` event unsignaled (service running, no headset) |
+`OVRSTUB_LOG` points). The `[libovr-trace]` lines show which Oculus files,
+events and env vars the game looks for, which is the first place to look when
+a new game doesn't reach its menu.
 
 ## Layout
 
 ```
 src/common/     logging shared by the DLLs
 src/platform/   LibOVRPlatform64_1.dll stub
-src/libovr/     LibOVRRT64_1.dll shim + LoadLibrary redirect
+src/libovr/     LibOVRRT64_1.dll shim: LoadLibrary redirect, GetProcAddress hook, WinVerifyTrust (sigcheck.c)
 src/injector/   ovrinject.exe
 tests/          Windows-side smoke tests (run under Wine by `make check`)
 launcher/ovrl/  Python launcher CLI (store.py: Meta API, download.py: CDN downloader)

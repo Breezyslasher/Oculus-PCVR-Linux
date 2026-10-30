@@ -36,6 +36,7 @@ struct hook {
 
 static const WCHAR *const g_source_dlls[] = {
     L"kernelbase.dll", L"kernel32.dll", L"advapi32.dll", L"ucrtbase.dll", L"msvcrt.dll",
+    L"wintrust.dll", L"crypt32.dll",
 };
 
 /* Pointers to the real implementations, typed from the SDK declarations. */
@@ -57,6 +58,7 @@ REAL(RegOpenKeyExA);
 REAL(CreateFileW);
 REAL(GetFileAttributesW);
 REAL(GetFileAttributesExW);
+REAL(GetProcAddress);
 
 static LPCWSTR base_name(LPCWSTR path)
 {
@@ -275,15 +277,57 @@ static BOOL WINAPI hook_GetFileAttributesExW(LPCWSTR path, GET_FILEEX_INFO_LEVEL
     return ok;
 }
 
+static int is_system_module(HMODULE mod);
+static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name);
+
 #define HOOK(fn) {#fn, (void *)hook_##fn, (void **)&real_##fn, {0}}
-static struct hook g_hooks[] = {
+#define MAX_HOOKS 64
+static struct hook g_hooks[MAX_HOOKS] = {
     HOOK(LoadLibraryW), HOOK(LoadLibraryExW), HOOK(LoadLibraryA), HOOK(LoadLibraryExA),
     HOOK(OpenEventW), HOOK(OpenEventA), HOOK(OpenMutexW), HOOK(OpenMutexA),
     HOOK(GetEnvironmentVariableW), HOOK(GetEnvironmentVariableA), HOOK(getenv), HOOK(_wgetenv),
     HOOK(RegOpenKeyExW), HOOK(RegOpenKeyExA),
     HOOK(CreateFileW), HOOK(GetFileAttributesW), HOOK(GetFileAttributesExW),
+    HOOK(GetProcAddress),
 };
-#define NHOOKS (sizeof(g_hooks) / sizeof(g_hooks[0]))
+/* Entries end at the first empty slot. */
+static size_t count_hooks(void)
+{
+    size_t n = 0;
+    while (n < MAX_HOOKS && g_hooks[n].name)
+        n++;
+    return n;
+}
+#define NHOOKS count_hooks()
+
+void hook_register(const char *name, void *hook, void **real)
+{
+    size_t n = count_hooks();
+    if (n >= MAX_HOOKS) {
+        LOG("hook table full; %s not hooked", name);
+        return;
+    }
+    g_hooks[n] = (struct hook){name, hook, real, {0}};
+}
+
+/* Functions the game resolves at run time (delay-load, or LoadLibrary +
+ * GetProcAddress) never appear in an import table, so hand out our hooks
+ * here too. Only system DLLs' exports are swapped. */
+static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
+{
+    FARPROC p = real_GetProcAddress(mod, name);
+    if (!p || ((ULONG_PTR)name >> 16) == 0 || !is_system_module(mod))
+        return p;
+    for (size_t i = 0, n = NHOOKS; i < n; i++) {
+        struct hook *h = &g_hooks[i];
+        if (strcmp(h->name, name) != 0)
+            continue;
+        if (!*h->real)
+            *h->real = (void *)p;
+        return (FARPROC)h->hook;
+    }
+    return p;
+}
 
 /* Record export addresses from any source DLL loaded since the last pass. */
 static void resolve_hooks(void)
@@ -292,7 +336,7 @@ static void resolve_hooks(void)
         HMODULE m = GetModuleHandleW(g_source_dlls[d]);
         if (!m)
             continue;
-        for (size_t i = 0; i < NHOOKS; i++) {
+        for (size_t i = 0, n = NHOOKS; i < n; i++) {
             struct hook *h = &g_hooks[i];
             void *addr = (void *)GetProcAddress(m, h->name);
             if (!addr)
@@ -340,7 +384,7 @@ static void patch_module(HMODULE mod)
         IMAGE_THUNK_DATA *thunk = (IMAGE_THUNK_DATA *)(base + imp->FirstThunk);
         for (; thunk->u1.Function; thunk++) {
             void *cur = (void *)thunk->u1.Function;
-            for (size_t i = 0; i < NHOOKS; i++) {
+            for (size_t i = 0, n = NHOOKS; i < n; i++) {
                 struct hook *h = &g_hooks[i];
                 int match = 0;
                 for (int a = 0; a < MAX_ADDRS && h->addrs[a]; a++)
