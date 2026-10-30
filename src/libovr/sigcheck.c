@@ -18,6 +18,7 @@
  * accessor it calls, and that can be handled per game.
  */
 #include <stdlib.h>
+#include <wchar.h>
 #include <windows.h>
 #include <wincrypt.h>
 #include <wintrust.h>
@@ -143,23 +144,51 @@ static CRYPT_PROVIDER_DATA *WINAPI hook_ProvDataFromStateData(HANDLE h)
     return cpd;
 }
 
-/* Is this signer's chain the genuine LibOVR runtime/platform file's, and did
- * CryptoAPI validate it with no errors? Decided from the provider data
- * itself rather than from a WinVerifyTrust call we saw: some loaders (Unity's
- * OVRPlugin) reach WinVerifyTrust in a way our hook doesn't intercept. */
+/* Is the signer one of the names Meta signs its runtime with? */
+static int signed_by_meta(CRYPT_PROVIDER_SGNR *cps)
+{
+    static const wchar_t *const names[] = {
+        L"Oculus VR, LLC", L"Facebook Technologies, LLC",
+        L"Meta Platforms Technologies, LLC",
+    };
+    if (!cps->csCertChain || !cps->pasCertChain || !cps->pasCertChain[0].pCert)
+        return 0;
+    wchar_t subject[128];
+    if (!CertGetNameStringW(cps->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                            0, NULL, subject, 128))
+        return 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (!wcscmp(subject, names[i]))
+            return 1;
+    return 0;
+}
+
+/* Is this signer's chain a genuine Meta-signed LibOVR file's, validated by
+ * CryptoAPI with no errors? Decided from the provider data itself rather
+ * than from a WinVerifyTrust call we saw: some loaders (Unity's OVRPlugin)
+ * reach WinVerifyTrust in a way our hook doesn't intercept. The file is
+ * recognised by name when the provider data carries it, else by its signer. */
 static int chain_is_trusted_libovr(CRYPT_PROVIDER_DATA *cpd, CRYPT_PROVIDER_SGNR *cps)
 {
-    if (!cpd || !cps || !cps->pChainContext)
+    if (!cpd || !cps)
         return 0;
-    if (!is_libovr_named(verified_file(cpd->pWintrustData)))
+    LPCWSTR file = verified_file(cpd->pWintrustData);
+    if (!is_libovr_named(file) && !signed_by_meta(cps)) {
+        LOG("not fixing: file %ls is not a Meta-signed LibOVR file",
+            file ? file : L"(unknown)");
         return 0;
+    }
+    if (!cps->pChainContext) {
+        LOG("not fixing: no certificate chain for %ls", file ? file : L"(unknown)");
+        return 0;
+    }
     /* Revocation that couldn't be checked offline doesn't make a chain
      * untrusted (WinVerifyTrust accepts it too); anything else does. */
     DWORD status = cps->pChainContext->TrustStatus.dwErrorStatus &
         ~(DWORD)(CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION);
     if (status != CERT_TRUST_NO_ERROR)
-        LOG("LibOVR signer chain has errors (status 0x%lx); leaving it as Wine "
-            "reported", (unsigned long)cps->pChainContext->TrustStatus.dwErrorStatus);
+        LOG("not fixing: LibOVR signer chain has errors (status 0x%lx)",
+            (unsigned long)cps->pChainContext->TrustStatus.dwErrorStatus);
     return status == CERT_TRUST_NO_ERROR;
 }
 
