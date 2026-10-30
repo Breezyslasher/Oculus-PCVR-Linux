@@ -7,6 +7,7 @@
 
 #define PSAPI_VERSION 2
 #include <psapi.h>
+#include <wincrypt.h>
 
 #include "../common/log.h"
 
@@ -36,7 +37,7 @@ struct hook {
 
 static const WCHAR *const g_source_dlls[] = {
     L"kernelbase.dll", L"kernel32.dll", L"advapi32.dll", L"ucrtbase.dll", L"msvcrt.dll",
-    L"wintrust.dll", L"crypt32.dll",
+    L"wintrust.dll", L"crypt32.dll", L"version.dll",
 };
 
 /* Pointers to the real implementations, typed from the SDK declarations. */
@@ -59,6 +60,10 @@ REAL(CreateFileW);
 REAL(GetFileAttributesW);
 REAL(GetFileAttributesExW);
 REAL(GetProcAddress);
+REAL(CertGetNameStringW);
+REAL(CertGetNameStringA);
+REAL(GetFileVersionInfoSizeW);
+REAL(GetFileVersionInfoW);
 
 static LPCWSTR base_name(LPCWSTR path)
 {
@@ -277,6 +282,45 @@ static BOOL WINAPI hook_GetFileAttributesExW(LPCWSTR path, GET_FILEEX_INFO_LEVEL
     return ok;
 }
 
+/* Diagnostics for the runtime's post-signature checks: the signer-name read
+ * and the version-resource read. Log only, pass results through. */
+static DWORD WINAPI hook_CertGetNameStringW(PCCERT_CONTEXT cert, DWORD type, DWORD flags,
+                                            void *para, LPWSTR name, DWORD cch)
+{
+    DWORD r = real_CertGetNameStringW(cert, type, flags, para, name, cch);
+    if (name && cch > 1 && r > 1)
+        TRACE("CertGetNameStringW(type=%lu) -> \"%ls\"", (unsigned long)type, name);
+    else
+        TRACE("CertGetNameStringW(type=%lu) -> %lu chars", (unsigned long)type,
+              (unsigned long)r);
+    return r;
+}
+
+static DWORD WINAPI hook_CertGetNameStringA(PCCERT_CONTEXT cert, DWORD type, DWORD flags,
+                                            void *para, LPSTR name, DWORD cch)
+{
+    DWORD r = real_CertGetNameStringA(cert, type, flags, para, name, cch);
+    if (name && cch > 1 && r > 1)
+        TRACE("CertGetNameStringA(type=%lu) -> \"%s\"", (unsigned long)type, name);
+    return r;
+}
+
+static DWORD WINAPI hook_GetFileVersionInfoSizeW(LPCWSTR path, LPDWORD handle)
+{
+    DWORD r = real_GetFileVersionInfoSizeW(path, handle);
+    if (contains_w(path, k_ovr_words))
+        TRACE("GetFileVersionInfoSizeW(%ls) -> %lu", path, (unsigned long)r);
+    return r;
+}
+
+static BOOL WINAPI hook_GetFileVersionInfoW(LPCWSTR path, DWORD handle, DWORD len, LPVOID data)
+{
+    BOOL ok = real_GetFileVersionInfoW(path, handle, len, data);
+    if (contains_w(path, k_ovr_words))
+        TRACE("GetFileVersionInfoW(%ls) -> %s", path, ok ? "ok" : "fail");
+    return ok;
+}
+
 static int is_system_module(HMODULE mod);
 static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name);
 
@@ -289,6 +333,8 @@ static struct hook g_hooks[MAX_HOOKS] = {
     HOOK(RegOpenKeyExW), HOOK(RegOpenKeyExA),
     HOOK(CreateFileW), HOOK(GetFileAttributesW), HOOK(GetFileAttributesExW),
     HOOK(GetProcAddress),
+    HOOK(CertGetNameStringW), HOOK(CertGetNameStringA),
+    HOOK(GetFileVersionInfoSizeW), HOOK(GetFileVersionInfoW),
 };
 /* Entries end at the first empty slot. */
 static size_t count_hooks(void)
