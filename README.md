@@ -104,7 +104,9 @@ cd launcher
 # runtime install) so the check passes against a real file; the injected
 # shim still swaps our implementation in at load, so no Meta service runs:
 python3 -m ovrl stubs install "$GAME" --real-runtime /path/to/real/LibOVRRT64_1.dll
-# Games without that check work with just:
+# If the game also checks the Platform SDK's signature, add its real file too:
+#   ... --real-platform /path/to/real/LibOVRPlatform64_1.dll
+# Games without the check work with just:
 #   python3 -m ovrl stubs install "$GAME"
 
 # Install the shim into the prefix and register a fake Oculus install

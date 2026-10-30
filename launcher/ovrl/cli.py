@@ -40,16 +40,16 @@ def _is_our_stub(path: Path) -> bool:
         return False
 
 
-def _check_real_runtime(path: Path) -> Path:
-    """Validate a user-supplied genuine Meta runtime before installing it."""
+def _check_real_dll(path: Path, name: str) -> Path:
+    """Validate a user-supplied genuine Meta DLL before installing it."""
     if not path.is_file():
         sys.exit(f"ovrl: {path} not found")
     data = path.read_bytes()
     if data[:2] != b"MZ":
         sys.exit(f"ovrl: {path} is not a Windows DLL")
     if STUB_MARKER in data:
-        sys.exit(f"ovrl: {path} is an ovrstub build, not Meta's signed runtime; "
-                 "supply the real LibOVRRT64_1.dll from a Meta PC runtime install")
+        sys.exit(f"ovrl: {path} is an ovrstub build, not Meta's signed {name}; "
+                 "supply the real file from a Meta PC runtime install")
     return path
 
 # Where the fake Oculus install lives inside the prefix, as Windows and Unix paths.
@@ -80,16 +80,17 @@ def cmd_stubs(args: argparse.Namespace) -> int:
 
     if args.action == "install":
         build = Path(args.build)
-        # The game's LibOVR loader often verifies the runtime is Meta-signed
-        # before loading it. With --real-runtime we place Meta's own genuine
-        # signed LibOVRRT64_1.dll here so that check passes against a real
+        # The game's LibOVR loader often verifies a DLL is Meta-signed before
+        # loading it. With --real-runtime / --real-platform we place Meta's
+        # own genuine signed DLL here so that check passes against a real
         # file; the injected shim's LoadLibrary redirect still swaps our
-        # implementation in at load, so Meta's service code never runs. The
-        # Platform SDK stub is always ours.
-        runtime_src = (_check_real_runtime(Path(args.real_runtime))
-                       if args.real_runtime else _build_file(build, RUNTIME_DLL))
-        sources = {RUNTIME_DLL: runtime_src, PLATFORM_DLL: _build_file(build, PLATFORM_DLL)}
-        for name, src in sources.items():
+        # implementation in at load, so Meta's service code never runs. When
+        # no real file is given for a slot, our stub is installed there.
+        real = {RUNTIME_DLL: args.real_runtime, PLATFORM_DLL: args.real_platform}
+        for name in (RUNTIME_DLL, PLATFORM_DLL):
+            is_real = bool(real[name])
+            src = _check_real_dll(Path(real[name]), name) if is_real \
+                else _build_file(build, name)
             target = game_dir / name
             backup = game_dir / (name + BACKUP_SUFFIX)
             # Never back up one of our own stubs as if it were the original.
@@ -97,8 +98,7 @@ def cmd_stubs(args: argparse.Namespace) -> int:
                 shutil.copy2(target, backup)
                 print(f"backed up original to {backup}")
             shutil.copy2(src, target)
-            kind = "real runtime" if src is runtime_src and args.real_runtime else "stub"
-            print(f"installed {kind} {target}")
+            print(f"installed {'real ' + name if is_real else 'stub'} {target}")
     else:
         restored = False
         for name in (RUNTIME_DLL, PLATFORM_DLL):
@@ -273,6 +273,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--real-runtime", metavar="LibOVRRT64_1.dll",
                    help="genuine Meta-signed runtime to place for the signature "
                         "check; the shim still provides the implementation")
+    s.add_argument("--real-platform", metavar="LibOVRPlatform64_1.dll",
+                   help="genuine Meta-signed Platform SDK, for games that also "
+                        "check its signature (the stub still provides it)")
     s.set_defaults(func=cmd_stubs)
 
     s = sub.add_parser("prefix-setup", help="install the LibOVR shim into a Wine/Proton prefix")
