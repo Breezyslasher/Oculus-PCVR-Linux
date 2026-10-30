@@ -757,14 +757,53 @@ EXPORT ovrResult ovr_GetMirrorTextureBufferDX(ovrSession session, ovrMirrorTextu
 /* Submit one frame's layers to the compositor and present. We handle the
  * EyeFov layer (what head-mounted rendering uses); others are ignored. The
  * caller has already blocked for render poses (via begin_frame). */
+/* The part of an EyeFov-style layer after its header. EyeFov, EyeFovDepth
+ * and EyeMatrix all start with the textures and viewports; we use those
+ * (RenderPose is only meaningful for EyeFov/EyeFovDepth, and only logged). */
+struct eye_layer {
+    ovrTextureSwapChain ColorTexture[ovrEye_Count];
+    ovrRecti Viewport[ovrEye_Count];
+    ovrFovPort Fov[ovrEye_Count];
+    ovrPosef RenderPose[ovrEye_Count];
+};
+
+/* Read an eye layer whatever the SDK's header size. Newer SDKs append a
+ * 128-byte Reserved block to ovrLayerHeader, moving every field after it.
+ * Rather than guess the version, accept whichever offset holds a swap chain
+ * we created, and never dereference anything else. */
+static int read_eye_layer(const ovrLayerHeader *h, struct eye_layer *out)
+{
+    if (!h || (h->Type != 1 /* EyeFov */ && h->Type != 2 /* EyeFovDepth */ &&
+               h->Type != 5 /* EyeMatrix */))
+        return 0;
+    static const size_t offsets[] = {sizeof(ovrLayerHeader), sizeof(ovrLayerHeader) + 128};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        memcpy(out, (const char *)h + offsets[i], sizeof(*out));
+        if (swapchain_d3d_known(out->ColorTexture[0])) {
+            if (!swapchain_d3d_known(out->ColorTexture[1]))
+                out->ColorTexture[1] = NULL;
+            static LONG logged;
+            if (!InterlockedExchange(&logged, 1))
+                LOG("layer type %d: fields at offset %u (header %s)", (int)h->Type,
+                    (unsigned)offsets[i], i ? "with Reserved[128]" : "plain");
+            return 1;
+        }
+    }
+    static LONG warned;
+    if (InterlockedIncrement(&warned) <= 5)
+        LOG("layer type %d: no known swap chain at either header offset; skipped",
+            (int)h->Type);
+    return 0;
+}
+
 static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
 {
     int submitted = 0;
     for (unsigned i = 0; i < count; i++) {
         const ovrLayerHeader *h = layers ? layers[i] : NULL;
-        if (!h || h->Type != ovrLayerType_EyeFov)
+        struct eye_layer layer, *l = &layer;
+        if (!read_eye_layer(h, l))
             continue;
-        const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
         for (int eye = 0; eye < ovrEye_Count; eye++) {
             ovrTextureSwapChain chain = l->ColorTexture[eye]
                 ? l->ColorTexture[eye] : l->ColorTexture[0];
@@ -809,8 +848,8 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
     if (preclear)
         for (unsigned i = 0; i < count; i++) {
             const ovrLayerHeader *h = layers ? layers[i] : NULL;
-            if (h && h->Type == ovrLayerType_EyeFov) {
-                const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
+            struct eye_layer layer, *l = &layer;
+            if (read_eye_layer(h, l)) {
                 swapchain_d3d_preclear_next(l->ColorTexture[0]);
                 if (l->ColorTexture[1] && l->ColorTexture[1] != l->ColorTexture[0])
                     swapchain_d3d_preclear_next(l->ColorTexture[1]);
@@ -824,9 +863,9 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
         vr_backend_log_compositor_state(f);
         for (unsigned i = 0; i < count; i++) {
             const ovrLayerHeader *h = layers ? layers[i] : NULL;
-            if (!h || h->Type != ovrLayerType_EyeFov)
+            struct eye_layer layer, *l = &layer;
+            if (!read_eye_layer(h, l))
                 continue;
-            const ovrLayerEyeFov *l = (const ovrLayerEyeFov *)h;
             LOG("frame %ld: layer %u flags 0x%x chains %p/%p viewports "
                 "L(%d,%d %dx%d) R(%d,%d %dx%d) renderpose L q(%.2f %.2f %.2f %.2f) "
                 "p(%.2f %.2f %.2f)", f, i, h->Flags, (void *)l->ColorTexture[0],

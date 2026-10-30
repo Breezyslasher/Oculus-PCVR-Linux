@@ -9,6 +9,7 @@
 
 #define LOG(...) stub_log("swapchain", __VA_ARGS__)
 #define MAX_CHAIN_LENGTH 3
+#define MAX_LIVE_CHAINS 64
 
 struct ovrTextureSwapChainData {
     ID3D11Texture2D *textures[MAX_CHAIN_LENGTH];
@@ -62,6 +63,32 @@ static UINT bind_flags(unsigned ovr_bind)
     return f;
 }
 
+static void *g_live[MAX_LIVE_CHAINS];
+static SRWLOCK g_live_lock = SRWLOCK_INIT;
+
+static void live_set(void *chain, void *value)
+{
+    AcquireSRWLockExclusive(&g_live_lock);
+    for (int i = 0; i < MAX_LIVE_CHAINS; i++)
+        if (g_live[i] == chain) {
+            g_live[i] = value;
+            break;
+        }
+    ReleaseSRWLockExclusive(&g_live_lock);
+}
+
+int swapchain_d3d_known(ovrTextureSwapChain chain)
+{
+    int found = 0;
+    if (!chain)
+        return 0;
+    AcquireSRWLockShared(&g_live_lock);
+    for (int i = 0; i < MAX_LIVE_CHAINS && !found; i++)
+        found = g_live[i] == (void *)chain;
+    ReleaseSRWLockShared(&g_live_lock);
+    return found;
+}
+
 ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
                                          const ovrTextureSwapChainDesc *desc)
 {
@@ -113,6 +140,7 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
             return NULL;
         }
     }
+    live_set(NULL, c);  /* claim a free slot */
     LOG("created %d-texture swap chain %dx%d fmt %d (shared=%d)",
         c->length, desc->Width, desc->Height, (int)td.Format,
         td.MiscFlags == D3D11_RESOURCE_MISC_SHARED);
@@ -124,6 +152,7 @@ void swapchain_d3d_destroy(ovrTextureSwapChain chain)
     struct ovrTextureSwapChainData *c = (void *)chain;
     if (!c)
         return;
+    live_set(c, NULL);
     for (int i = 0; i < MAX_CHAIN_LENGTH; i++)
         if (c->textures[i])
             ID3D11Texture2D_Release(c->textures[i]);

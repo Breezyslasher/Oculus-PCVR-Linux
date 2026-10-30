@@ -18,6 +18,9 @@ struct ovrTextureSwapChainData;  /* opaque; defined in swapchain_d3d.c */
 ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
                                          const ovrTextureSwapChainDesc *desc);
 void swapchain_d3d_destroy(ovrTextureSwapChain chain);
+/* True if `chain` is a live swap chain we created. Lets callers validate a
+ * pointer read from a game struct before using it. */
+int swapchain_d3d_known(ovrTextureSwapChain chain);
 
 int swapchain_d3d_length(ovrTextureSwapChain chain);
 int swapchain_d3d_current_index(ovrTextureSwapChain chain);
