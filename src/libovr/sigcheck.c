@@ -28,6 +28,13 @@
 #define LOG(...) stub_log("libovr-sigcheck", __VA_ARGS__)
 
 static __typeof__(&WinVerifyTrust) real_WinVerifyTrust;
+/* Diagnostics: the two accessors the game uses to inspect the signature, so
+ * we can see the provider-data shape Wine built for the genuine Meta file. */
+typedef CRYPT_PROVIDER_DATA *(WINAPI *WTHelperProvDataFromStateData_t)(HANDLE);
+typedef CRYPT_PROVIDER_SGNR *(WINAPI *WTHelperGetProvSignerFromChain_t)(
+    CRYPT_PROVIDER_DATA *, DWORD, BOOL, DWORD);
+static WTHelperProvDataFromStateData_t real_ProvDataFromStateData;
+static WTHelperGetProvSignerFromChain_t real_GetProvSignerFromChain;
 static int g_enabled = 1;
 
 /* True only for a file that is actually one of our stubs (carries the build
@@ -123,6 +130,34 @@ static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
     return r;
 }
 
+static CRYPT_PROVIDER_DATA *WINAPI hook_ProvDataFromStateData(HANDLE h)
+{
+    CRYPT_PROVIDER_DATA *cpd = real_ProvDataFromStateData(h);
+    if (cpd)
+        LOG("WTHelperProvDataFromStateData -> csSigners=%lu",
+            (unsigned long)cpd->csSigners);
+    else
+        LOG("WTHelperProvDataFromStateData -> NULL");
+    return cpd;
+}
+
+static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DATA *cpd,
+                                                               DWORD idxSigner,
+                                                               BOOL counterSigner,
+                                                               DWORD idxCounterSigner)
+{
+    CRYPT_PROVIDER_SGNR *cps =
+        real_GetProvSignerFromChain(cpd, idxSigner, counterSigner, idxCounterSigner);
+    if (cps)
+        LOG("WTHelperGetProvSignerFromChain(signer %lu) -> csCertChain=%lu "
+            "(game wants exactly 3)", (unsigned long)idxSigner,
+            (unsigned long)cps->csCertChain);
+    else
+        LOG("WTHelperGetProvSignerFromChain(signer %lu) -> NULL",
+            (unsigned long)idxSigner);
+    return cps;
+}
+
 void sigcheck_install(void)
 {
     const char *v = getenv("OVRSTUB_FAKE_SIGNATURE");
@@ -133,5 +168,9 @@ void sigcheck_install(void)
     }
     hook_register("WinVerifyTrust", (void *)hook_WinVerifyTrust,
                   (void **)&real_WinVerifyTrust);
+    hook_register("WTHelperProvDataFromStateData", (void *)hook_ProvDataFromStateData,
+                  (void **)&real_ProvDataFromStateData);
+    hook_register("WTHelperGetProvSignerFromChain", (void *)hook_GetProvSignerFromChain,
+                  (void **)&real_GetProvSignerFromChain);
     LOG("will report LibOVRRT64_1.dll and LibOVRPlatform64_1.dll as trusted");
 }
