@@ -3,11 +3,13 @@
 #define COBJMACROS
 #include <d3d11.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../common/log.h"
 
 #define LOG(...) stub_log("swapchain", __VA_ARGS__)
 #define MAX_CHAIN_LENGTH 3
+#define MAX_LIVE_CHAINS 64
 
 struct ovrTextureSwapChainData {
     ID3D11Texture2D *textures[MAX_CHAIN_LENGTH];
@@ -15,6 +17,7 @@ struct ovrTextureSwapChainData {
     int index;          /* next buffer the game will render into */
     int committed;      /* last index committed, or -1 */
     int width, height;
+    DXGI_FORMAT format;
 };
 
 /* Map a LibOVR texture format to a DXGI format. With the Typeless misc flag
@@ -60,6 +63,32 @@ static UINT bind_flags(unsigned ovr_bind)
     return f;
 }
 
+static void *g_live[MAX_LIVE_CHAINS];
+static SRWLOCK g_live_lock = SRWLOCK_INIT;
+
+static void live_set(void *chain, void *value)
+{
+    AcquireSRWLockExclusive(&g_live_lock);
+    for (int i = 0; i < MAX_LIVE_CHAINS; i++)
+        if (g_live[i] == chain) {
+            g_live[i] = value;
+            break;
+        }
+    ReleaseSRWLockExclusive(&g_live_lock);
+}
+
+int swapchain_d3d_known(ovrTextureSwapChain chain)
+{
+    int found = 0;
+    if (!chain)
+        return 0;
+    AcquireSRWLockShared(&g_live_lock);
+    for (int i = 0; i < MAX_LIVE_CHAINS && !found; i++)
+        found = g_live[i] == (void *)chain;
+    ReleaseSRWLockShared(&g_live_lock);
+    return found;
+}
+
 ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
                                          const ovrTextureSwapChainDesc *desc)
 {
@@ -90,6 +119,12 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
     td.BindFlags = bind_flags(desc->BindFlags);
     /* Shared so SteamVR's out-of-process compositor can open the texture. */
     td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    /* Under Proton the compositor reads textures in-process through DXVK, so
+     * sharing isn't needed; OVRSTUB_NO_SHARED=1 drops it for testing. */
+    const char *ns = getenv("OVRSTUB_NO_SHARED");
+    if (ns && *ns == '1')
+        td.MiscFlags = 0;
+    c->format = td.Format;
 
     for (int i = 0; i < c->length; i++) {
         HRESULT hr = ID3D11Device_CreateTexture2D(dev, &td, NULL, &c->textures[i]);
@@ -105,6 +140,7 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
             return NULL;
         }
     }
+    live_set(NULL, c);  /* claim a free slot */
     LOG("created %d-texture swap chain %dx%d fmt %d (shared=%d)",
         c->length, desc->Width, desc->Height, (int)td.Format,
         td.MiscFlags == D3D11_RESOURCE_MISC_SHARED);
@@ -116,6 +152,7 @@ void swapchain_d3d_destroy(ovrTextureSwapChain chain)
     struct ovrTextureSwapChainData *c = (void *)chain;
     if (!c)
         return;
+    live_set(c, NULL);
     for (int i = 0; i < MAX_CHAIN_LENGTH; i++)
         if (c->textures[i])
             ID3D11Texture2D_Release(c->textures[i]);
@@ -166,6 +203,140 @@ void *swapchain_d3d_submit_texture(ovrTextureSwapChain chain)
         return NULL;
     int i = c->committed >= 0 ? c->committed : 0;
     return c->textures[i];
+}
+
+static DXGI_FORMAT typed_format(DXGI_FORMAT f)
+{
+    switch (f) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS: return DXGI_FORMAT_B8G8R8X8_UNORM;
+    default: return f;
+    }
+}
+
+static void clear_texture(struct ovrTextureSwapChainData *c, ID3D11Texture2D *tex,
+                          const float color[4]);
+
+void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c)
+        return;
+    /* Magenta for the left eye, cyan for the right. */
+    const float colors[2][4] = {{1, 0, 1, 1}, {0, 1, 1, 1}};
+    clear_texture(c, swapchain_d3d_submit_texture(chain), colors[eye & 1]);
+}
+
+void swapchain_d3d_preclear_next(ovrTextureSwapChain chain)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c)
+        return;
+    const float marker[4] = {0.0f, 0.25f, 0.0f, 1.0f};  /* dark green */
+    clear_texture(c, c->textures[c->index], marker);
+}
+
+static void clear_texture(struct ovrTextureSwapChainData *c, ID3D11Texture2D *tex,
+                          const float color[4])
+{
+    if (!tex)
+        return;
+    ID3D11Device *dev = NULL;
+    ID3D11Texture2D_GetDevice(tex, &dev);
+    if (!dev)
+        return;
+    ID3D11DeviceContext *ctx = NULL;
+    ID3D11Device_GetImmediateContext(dev, &ctx);
+    D3D11_RENDER_TARGET_VIEW_DESC rd;
+    memset(&rd, 0, sizeof(rd));
+    rd.Format = typed_format(c->format);
+    rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    ID3D11RenderTargetView *rtv = NULL;
+    HRESULT hr = ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)tex, &rd, &rtv);
+    if (SUCCEEDED(hr) && ctx) {
+        ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, color);
+        ID3D11DeviceContext_Flush(ctx);
+        ID3D11RenderTargetView_Release(rtv);
+    } else {
+        static int warned;
+        if (!warned++)
+            LOG("clear: CreateRenderTargetView failed (hr 0x%08lx)",
+                (unsigned long)hr);
+    }
+    if (ctx)
+        ID3D11DeviceContext_Release(ctx);
+    ID3D11Device_Release(dev);
+}
+
+static unsigned read_pixel(ID3D11Device *dev, ID3D11DeviceContext *ctx,
+                           ID3D11Texture2D *src, DXGI_FORMAT fmt, int x, int y)
+{
+    D3D11_TEXTURE2D_DESC sd;
+    memset(&sd, 0, sizeof(sd));
+    sd.Width = sd.Height = 1;
+    sd.MipLevels = sd.ArraySize = 1;
+    sd.Format = fmt;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *staging = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(dev, &sd, NULL, &staging)))
+        return 0xdeadbeef;
+    D3D11_BOX box = {(UINT)x, (UINT)y, 0, (UINT)x + 1, (UINT)y + 1, 1};
+    ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)staging, 0, 0, 0, 0,
+                                              (ID3D11Resource *)src, 0, &box);
+    unsigned v = 0xdeadbeef;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0,
+                                          D3D11_MAP_READ, 0, &m))) {
+        v = *(const unsigned *)m.pData;
+        ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+    }
+    ID3D11Texture2D_Release(staging);
+    return v;
+}
+
+void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c || !c->textures[0])
+        return;
+    ID3D11Device *dev = NULL;
+    ID3D11Texture2D_GetDevice(c->textures[0], &dev);
+    if (!dev)
+        return;
+    ID3D11DeviceContext *ctx = NULL;
+    ID3D11Device_GetImmediateContext(dev, &ctx);
+    if (ctx) {
+        for (int i = 0; i < c->length; i++) {
+            /* A 3x3 grid in each eye's half; report how many samples are
+             * non-zero and the first non-zero value, plus the centre. */
+            for (int eye = 0; eye < 2; eye++) {
+                int nonzero = 0;
+                unsigned first = 0, centre = 0;
+                for (int gy = 1; gy <= 3; gy++)
+                    for (int gx = 1; gx <= 3; gx++) {
+                        int x = eye * c->width / 2 + gx * c->width / 8;
+                        int y = gy * c->height / 4;
+                        unsigned v = read_pixel(dev, ctx, c->textures[i], c->format, x, y);
+                        if (gx == 2 && gy == 2)
+                            centre = v;
+                        if (v) {
+                            if (!nonzero)
+                                first = v;
+                            nonzero++;
+                        }
+                    }
+                LOG("frame %ld: chain %p buffer %d%s eye %c: %d/9 samples non-zero "
+                    "(first %08x, centre %08x)", frame, (void *)c, i,
+                    i == c->committed ? " (submitted)" : "", eye ? 'R' : 'L',
+                    nonzero, first, centre);
+            }
+        }
+        ID3D11DeviceContext_Release(ctx);
+    }
+    ID3D11Device_Release(dev);
 }
 
 void swapchain_d3d_size(ovrTextureSwapChain chain, int *width, int *height)

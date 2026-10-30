@@ -18,6 +18,9 @@ struct ovrTextureSwapChainData;  /* opaque; defined in swapchain_d3d.c */
 ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
                                          const ovrTextureSwapChainDesc *desc);
 void swapchain_d3d_destroy(ovrTextureSwapChain chain);
+/* True if `chain` is a live swap chain we created. Lets callers validate a
+ * pointer read from a game struct before using it. */
+int swapchain_d3d_known(ovrTextureSwapChain chain);
 
 int swapchain_d3d_length(ovrTextureSwapChain chain);
 int swapchain_d3d_current_index(ovrTextureSwapChain chain);
@@ -30,5 +33,17 @@ void *swapchain_d3d_buffer(ovrTextureSwapChain chain, int index, const void *iid
  * pixel dimensions. */
 void *swapchain_d3d_submit_texture(ovrTextureSwapChain chain);
 void swapchain_d3d_size(ovrTextureSwapChain chain, int *width, int *height);
+/* Debug aid (OVRSTUB_TEST_PATTERN=1): clear the texture about to be submitted
+ * to a solid color, so whether it shows in the headset separates "submission
+ * is broken" from "the game's rendering doesn't reach our texture". */
+void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye);
+/* Debug aid: log a pixel from the middle of each eye's half of every buffer
+ * in the chain (marking the one we submit), to tell "the game draws into a
+ * different buffer" from "the game draws nothing". */
+void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame);
+/* Debug aid (OVRSTUB_PRECLEAR=1): clear the buffer the game renders into
+ * next to a marker color, so a probe can tell "never written" (marker) from
+ * "written black" (zeros). */
+void swapchain_d3d_preclear_next(ovrTextureSwapChain chain);
 
 #endif

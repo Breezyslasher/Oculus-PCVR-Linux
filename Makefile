@@ -6,6 +6,9 @@ CROSS   ?= x86_64-w64-mingw32-
 CC      := $(CROSS)gcc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Werror -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
+# Stamped into the DLLs' startup log line so a log shows which build ran.
+BUILD_ID := $(shell git describe --always --dirty 2>/dev/null || echo unknown)
+CFLAGS  += -DOVRSTUB_BUILD_ID=\"$(BUILD_ID)\"
 LDFLAGS += -static-libgcc -Wl,--enable-stdcall-fixup
 
 BUILD   := build
@@ -30,7 +33,7 @@ LIBOVR_SRC := src/libovr/libovr_stub.c src/libovr/iat_hook.c src/libovr/sigcheck
 LIBOVR_INC := -Ithird_party/openvr
 
 $(LIBOVR_DLL): $(LIBOVR_SRC) src/libovr/*.h $(COMMON) | $(BUILD)
-	$(CC) $(CFLAGS) $(LIBOVR_INC) -shared -o $@ $(LIBOVR_SRC) $(COMMON) $(LDFLAGS) -lwintrust -lcrypt32
+	$(CC) $(CFLAGS) $(LIBOVR_INC) -shared -o $@ $(LIBOVR_SRC) $(COMMON) $(LDFLAGS) -lwintrust -lcrypt32 -lole32 -lwinmm -ldxgi
 
 $(INJECTOR): src/injector/ovrinject.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lshell32

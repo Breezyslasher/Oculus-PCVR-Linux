@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import pe, store
+from . import pe, steam, store
 from .download import download_build
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,13 +154,33 @@ def _find_openvr_api(override: str | None) -> Path | None:
         Path.home() / ".local/share/Steam",
         Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
     ]
-    # Steam libraries can live elsewhere; also scan common library folders.
-    rel = Path("steamapps/common/SteamVR/bin/win64/openvr_api.dll")
-    for root in steam_roots:
-        cand = root / rel
+    # SteamVR's own copy first; failing that, any installed game's 64-bit
+    # Windows build (SteamVR on Linux may not ship one, games usually do).
+    roots = [r for r in steam_roots if r.is_dir()]
+    for root in roots:
+        cand = root / "steamapps/common/SteamVR/bin/win64/openvr_api.dll"
         if cand.is_file():
             return cand
+    for root in roots:
+        for pattern in ("steamapps/common/*/bin/win64/openvr_api.dll",
+                        "steamapps/common/*/*/Binaries/ThirdParty/OpenVR/*/Win64/openvr_api.dll",
+                        "steamapps/common/*/*_Data/Plugins/x86_64/openvr_api.dll",
+                        "steamapps/common/*/*_Data/Plugins/openvr_api.dll"):
+            for cand in sorted(root.glob(pattern)):
+                if cand.is_file() and pe_is_x64(cand):
+                    return cand
     return None
+
+
+def pe_is_x64(path: Path) -> bool:
+    """True for a 64-bit (x86-64) PE file."""
+    try:
+        data = path.read_bytes()[:4096]
+        off = int.from_bytes(data[0x3C:0x40], "little")
+        return data[off:off + 4] == b"PE\0\0" and \
+            int.from_bytes(data[off + 4:off + 6], "little") == 0x8664
+    except (OSError, ValueError):
+        return False
 
 
 def cmd_prefix_setup(args: argparse.Namespace) -> int:
@@ -301,7 +321,8 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     return 0
 
 
-def _steam_launch_options(exe: Path, hmd: str | None) -> str:
+def _steam_launch_options(exe: Path, hmd: str | None,
+                          prefix: Path | None = None) -> str:
     """The Steam launch-options line that runs the game through the injector.
 
     Steam runs the launch options as a shell command with %command% expanded
@@ -314,6 +335,10 @@ def _steam_launch_options(exe: Path, hmd: str | None) -> str:
     # the shell in the launch-options field from eating backslashes; skip it if
     # the path has a space, which a VAR=val prefix there can't carry.
     env_prefix = "OVRSTUB_INSTALL_ROOT_CA=1"
+    if prefix:
+        # Steam would otherwise give the shortcut a fresh compatdata prefix;
+        # overriding it reuses one already prepared with `ovrl prefix-setup`.
+        env_prefix = f"STEAM_COMPAT_DATA_PATH={prefix} " + env_prefix
     log_win = f"Z:{exe.parent}/ovrstub.log"
     if " " not in log_win:
         env_prefix += f" OVRSTUB_LOG={log_win}"
@@ -341,6 +366,31 @@ def _steam_running() -> bool:
         return False
 
 
+def _prefix_proton_tool(prefix: Path | None, cfg: dict) -> str | None:
+    """The compat tool matching the Proton that created `prefix`, if known.
+
+    Proton writes its version to <compatdata>/version (e.g. "10.0-201").
+    Running a prefix with an older Proton than made it can break it (Proton
+    9 fails the game's signature check in a Proton 10 prefix), so prefer
+    the same major version when Steam already knows a tool by that name.
+    """
+    if not prefix:
+        return None
+    try:
+        version = (prefix / "version").read_text().strip()
+        major = int(version.split(".")[0].split("-")[0])
+    except (OSError, ValueError):
+        return None
+    want = f"proton_{major}"
+    known = {m.get("name") for m in steam.compat_mappings(cfg)}
+    if want in known:
+        return want
+    print(f"ovrl: note: {prefix} was made by Proton {version}; if the game misbehaves, "
+          f"set its Compatibility tool to that version in Steam (or pass --proton-tool)",
+          file=sys.stderr)
+    return None
+
+
 def cmd_add_to_steam(args: argparse.Namespace) -> int:
     """Write the non-Steam shortcut and Proton mapping, as Heroic does.
 
@@ -349,8 +399,6 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
     on exit, so it must be closed while we work. Each file is backed up and
     must round-trip through our parser before we change it.
     """
-    from . import steam
-
     exe = Path(args.game_exe).resolve()
     exe_dir = exe.parent
     for name in (INJECTOR, SHIM_INJECT_NAME):
@@ -380,8 +428,17 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
     exe_field = f'"{exe_dir / INJECTOR}"'
     start_field = f'"{exe_dir}/"'
     appid = steam.shortcut_appid(exe_field, name)
+    prefix = None
+    if args.prefix:
+        prefix = Path(args.prefix).expanduser().resolve()
+        if not (_wine_prefix(prefix) / "drive_c").is_dir():
+            sys.exit(f"ovrl: {prefix} is not an initialized Proton prefix")
+        if " " in str(prefix):
+            sys.exit(f"ovrl: {prefix} contains a space, which Steam launch "
+                     "options can't carry in a VAR=val prefix")
     entry = steam.make_entry(appid, name, exe_field, start_field,
-                             _steam_launch_options(exe, args.hmd), openvr=True)
+                             _steam_launch_options(exe, args.hmd, prefix),
+                             openvr=True)
 
     # --- shortcuts.vdf ---
     shortcuts = user_dir / "config" / "shortcuts.vdf"
@@ -407,7 +464,8 @@ def cmd_add_to_steam(args: argparse.Namespace) -> int:
         if steam.parse_text_vdf(steam.dump_text_vdf(cfg)) != cfg:
             sys.exit(f"ovrl: refusing to edit {config}: it doesn't round-trip "
                      "through our parser")
-        tool = args.proton_tool or steam.detect_proton_tool(cfg)
+        tool = args.proton_tool or _prefix_proton_tool(prefix, cfg) \
+            or steam.detect_proton_tool(cfg)
         if tool:
             shutil.copy2(config, config.with_suffix(".vdf.ovrl-bak"))
             steam.set_compat_tool(cfg, appid, tool)
@@ -548,6 +606,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--proton-tool", metavar="NAME",
                    help="compat tool name, e.g. proton_10 (default: reuse the one "
                         "your other games are mapped to)")
+    s.add_argument("--prefix", metavar="COMPATDATA",
+                   help="Proton prefix (compatdata dir) to run in instead of the "
+                        "fresh one Steam would create, e.g. one set up with "
+                        "`ovrl prefix-setup`")
     s.add_argument("--steam-root", help="Steam install dir (auto-detected)")
     s.add_argument("--steam-user", metavar="ID",
                    help="userdata folder to use if you have several Steam users")

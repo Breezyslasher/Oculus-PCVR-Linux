@@ -1,6 +1,7 @@
 #include "vr_backend.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -141,6 +142,14 @@ bool vr_backend_hmd_present(void)
     return p_IsHmdPresent ? p_IsHmdPresent() : false;
 }
 
+int vr_backend_dxgi_adapter_index(void)
+{
+    int32_t index = -1;
+    if (g_active && g_system && g_system->GetDXGIOutputInfo)
+        g_system->GetDXGIOutputInfo(&index);
+    return index;
+}
+
 void vr_backend_render_target_size(int *width, int *height)
 {
     uint32_t w = 0, h = 0;
@@ -248,6 +257,51 @@ ovrPoseStatef vr_backend_head_pose(void)
     return s;
 }
 
+static void fill_pose_state(ovrPoseStatef *s, const TrackedDevicePose_t *p)
+{
+    s->ThePose = pose_from_matrix(&p->mDeviceToAbsoluteTracking);
+    s->AngularVelocity.x = p->vAngularVelocity.v[0];
+    s->AngularVelocity.y = p->vAngularVelocity.v[1];
+    s->AngularVelocity.z = p->vAngularVelocity.v[2];
+    s->LinearVelocity.x = p->vVelocity.v[0];
+    s->LinearVelocity.y = p->vVelocity.v[1];
+    s->LinearVelocity.z = p->vVelocity.v[2];
+}
+
+bool vr_backend_controller(int hand, struct vr_controller *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->pose.ThePose.Orientation.w = 1.0f;
+    if (!g_active)
+        return false;
+    TrackedDeviceIndex_t idx = g_system->GetTrackedDeviceIndexForControllerRole(
+        hand ? ETrackedControllerRole_TrackedControllerRole_RightHand
+             : ETrackedControllerRole_TrackedControllerRole_LeftHand);
+    if (idx == k_unTrackedDeviceIndexInvalid || idx >= k_unMaxTrackedDeviceCount)
+        return false;
+    VRControllerState_t st;
+    memset(&st, 0, sizeof(st));
+    if (!g_system->GetControllerState(idx, &st, sizeof(st)))
+        return false;
+    out->connected = 1;
+    out->pressed = st.ulButtonPressed;
+    out->touched = st.ulButtonTouched;
+    for (int i = 0; i < 5; i++) {
+        out->axis[i][0] = st.rAxis[i].x;
+        out->axis[i][1] = st.rAxis[i].y;
+    }
+    TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
+    memset(poses, 0, sizeof(poses));
+    g_system->GetDeviceToAbsoluteTrackingPose(
+        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        k_unMaxTrackedDeviceCount);
+    if (poses[idx].bPoseIsValid) {
+        fill_pose_state(&out->pose, &poses[idx]);
+        out->pose_valid = 1;
+    }
+    return true;
+}
+
 bool vr_backend_begin_frame(void)
 {
     if (!g_active)
@@ -258,6 +312,11 @@ bool vr_backend_begin_frame(void)
     TrackedDevicePose_t render[k_unMaxTrackedDeviceCount];
     EVRCompositorError e = g_compositor->WaitGetPoses(render, k_unMaxTrackedDeviceCount,
                                                       NULL, 0);
+    if (e != EVRCompositorError_VRCompositorError_None) {
+        static int logged;
+        if (logged++ < 5)
+            LOG("compositor WaitGetPoses failed: %d", (int)e);
+    }
     return e == EVRCompositorError_VRCompositorError_None;
 }
 
@@ -269,13 +328,41 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
     struct Texture_t tex;
     tex.handle = d3d11_texture;
     tex.eType = ETextureType_TextureType_DirectX;
-    tex.eColorSpace = EColorSpace_ColorSpace_Auto;
+    /* OVRSTUB_COLORSPACE=gamma|linear overrides Auto, for typeless or sRGB
+     * textures the compositor may otherwise misread. */
+    static int cs = -1;
+    if (cs < 0) {
+        const char *v = getenv("OVRSTUB_COLORSPACE");
+        cs = !v ? EColorSpace_ColorSpace_Auto
+           : !strcmp(v, "gamma") ? EColorSpace_ColorSpace_Gamma
+           : !strcmp(v, "linear") ? EColorSpace_ColorSpace_Linear
+           : EColorSpace_ColorSpace_Auto;
+    }
+    tex.eColorSpace = (EColorSpace)cs;
     struct VRTextureBounds_t bounds = {uMin, vMin, uMax, vMax};
     EVRCompositorError e = g_compositor->Submit((EVREye)eye, &tex, &bounds,
                                                 EVRSubmitFlags_Submit_Default);
     if (e != EVRCompositorError_VRCompositorError_None)
         LOG("compositor Submit(eye %d) failed: %d", (int)eye, (int)e);
     return e == EVRCompositorError_VRCompositorError_None;
+}
+
+void vr_backend_log_compositor_state(long frame)
+{
+    if (!g_active)
+        return;
+    struct Compositor_FrameTiming t;
+    memset(&t, 0, sizeof(t));
+    t.m_nSize = sizeof(t);
+    bool have = g_compositor->GetFrameTiming && g_compositor->GetFrameTiming(&t, 0);
+    LOG("frame %ld: compositor CanRenderScene=%d sceneFocusPid=%u lastRendererPid=%u "
+        "(our win pid %lu)%s presents=%u dropped=%u mispresented=%u",
+        frame, g_compositor->CanRenderScene ? (int)g_compositor->CanRenderScene() : -1,
+        g_compositor->GetCurrentSceneFocusProcess
+            ? g_compositor->GetCurrentSceneFocusProcess() : 0,
+        g_compositor->GetLastFrameRenderer ? g_compositor->GetLastFrameRenderer() : 0,
+        (unsigned long)GetCurrentProcessId(), have ? "" : " (no timing)",
+        t.m_nNumFramePresents, t.m_nNumDroppedFrames, t.m_nNumMisPresented);
 }
 
 void vr_backend_present(void)

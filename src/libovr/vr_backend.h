@@ -36,8 +36,30 @@ ovrPosef vr_backend_eye_pose(ovrEyeType eye);
 /* Latest head pose (orientation + position). Identity if unavailable. */
 ovrPoseStatef vr_backend_head_pose(void);
 
-/* True while a hand controller of the given OpenVR class is connected. */
+/* One hand controller's state as SteamVR reports it (legacy input). */
+/* OpenVR EVRButtonId values used by its legacy Touch bindings, so callers
+ * needn't include the OpenVR header. */
+enum {
+    VR_BUTTON_APP_MENU = 1,  /* B / Y */
+    VR_BUTTON_A = 7,         /* A / X */
+    VR_BUTTON_AXIS0 = 32,    /* thumbstick */
+    VR_BUTTON_AXIS1 = 33,    /* index trigger */
+};
+struct vr_controller {
+    int connected;
+    uint64_t pressed;          /* bit (1 << EVRButtonId) per button */
+    uint64_t touched;
+    float axis[5][2];          /* x, y per OpenVR axis */
+    int pose_valid;
+    ovrPoseStatef pose;        /* standing space, like the head pose */
+};
+
+/* Read hand 0 (left) or 1 (right). Returns false if it isn't connected. */
+bool vr_backend_controller(int hand, struct vr_controller *out);
+
 bool vr_backend_hmd_present(void);
+/* DXGI adapter index SteamVR renders to, or -1 if it doesn't say. */
+int vr_backend_dxgi_adapter_index(void);
 
 /* ---- Frame submission (Milestone 3b) ------------------------------------
  * A frame is: begin (block for the compositor's render poses), render, then
@@ -51,5 +73,7 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
                            float uMin, float vMin, float uMax, float vMax);
 
 void vr_backend_present(void);
+/* Log what the compositor thinks of us (scene focus, presents, drops). */
+void vr_backend_log_compositor_state(long frame);
 
 #endif

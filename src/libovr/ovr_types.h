@@ -34,7 +34,8 @@ enum {
     ovrError_InvalidParameter = -1005,
     ovrError_NoHmd = -1007,
     ovrError_Unsupported = -1009,
-    ovrError_RuntimeException = -1016,
+    ovrError_InsufficientArraySize = -1016,
+    ovrError_RuntimeException = -7000,
     ovrError_Initialize = -3000,
 };
 
@@ -240,6 +241,51 @@ typedef struct {
 
 static_assert(sizeof(ovrTextureSwapChainDesc) == 40, "ovrTextureSwapChainDesc");
 static_assert(sizeof(ovrLayerEyeFov) == 152, "ovrLayerEyeFov");
+
+/* ---- Touch controller input -------------------------------------------- */
+
+enum {
+    ovrButton_A = 0x00000001, ovrButton_B = 0x00000002,
+    ovrButton_RThumb = 0x00000004,
+    ovrButton_X = 0x00000100, ovrButton_Y = 0x00000200,
+    ovrButton_LThumb = 0x00000400,
+    ovrButton_Enter = 0x00100000,
+};
+enum {
+    ovrTouch_A = 0x00000001, ovrTouch_B = 0x00000002,
+    ovrTouch_RThumb = 0x00000004, ovrTouch_RThumbRest = 0x00000008,
+    ovrTouch_RIndexTrigger = 0x00000010, ovrTouch_RIndexPointing = 0x00000020,
+    ovrTouch_RThumbUp = 0x00000040,
+    ovrTouch_X = 0x00000100, ovrTouch_Y = 0x00000200,
+    ovrTouch_LThumb = 0x00000400, ovrTouch_LThumbRest = 0x00000800,
+    ovrTouch_LIndexTrigger = 0x00001000, ovrTouch_LIndexPointing = 0x00002000,
+    ovrTouch_LThumbUp = 0x00004000,
+};
+enum {
+    ovrControllerType_LTouch = 0x01, ovrControllerType_RTouch = 0x02,
+    ovrControllerType_Touch = 0x03,
+};
+
+/* The full 1.17+ layout. Older SDKs end the struct earlier (no NoDeadzone
+ * fields before 1.11, no Raw fields before 1.17); ovr_GetInputState writes
+ * only the prefix the caller's SDK version has. */
+typedef struct {
+    double TimeInSeconds;
+    unsigned Buttons;
+    unsigned Touches;
+    float IndexTrigger[2];
+    float HandTrigger[2];
+    ovrVector2f Thumbstick[2];
+    int ControllerType;
+    float IndexTriggerNoDeadzone[2];
+    float HandTriggerNoDeadzone[2];
+    ovrVector2f ThumbstickNoDeadzone[2];
+    float IndexTriggerRaw[2];
+    float HandTriggerRaw[2];
+    ovrVector2f ThumbstickRaw[2];
+} ovrInputState;
+
+static_assert(sizeof(ovrInputState) == 120, "ovrInputState");
 
 typedef struct {
     ovrBool IsOculusServiceRunning;

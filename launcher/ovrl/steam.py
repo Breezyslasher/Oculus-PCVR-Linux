@@ -274,6 +274,16 @@ def set_compat_tool(root: dict, appid: int, tool: str) -> None:
     node[str(appid)] = {"name": tool, "config": "", "priority": "250"}
 
 
+def compat_mappings(root: dict) -> list[dict]:
+    """All per-app compat tool entries in config.vdf."""
+    node = root
+    for part in _COMPAT_PATH:
+        node = _descend(node, part, create=False)
+        if node is None:
+            return []
+    return [m for m in node.values() if isinstance(m, dict)]
+
+
 def detect_proton_tool(root: dict) -> str | None:
     """Reuse whatever Proton other games are already mapped to, if any."""
     node = root
