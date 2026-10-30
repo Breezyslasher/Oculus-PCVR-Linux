@@ -11,6 +11,7 @@
  * resolve its full symbol table; since no session is ever created they just
  * fail with ovrError_InvalidSession or return zeroed structs.
  */
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
@@ -22,6 +23,7 @@
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
 
 static ovrErrorInfo g_last_error;
+static HANDLE g_hmd_event;
 static int g_initialized;
 static LARGE_INTEGER g_qpc_freq;
 
@@ -339,6 +341,25 @@ EXPORT ovrBool ovr_SetString(ovrSession s, const char *name, const char *v)
     return ovrFalse;
 }
 
+/*
+ * The Oculus service creates a named event, "OculusHMDConnected", and signals
+ * it while a headset is attached. Unreal's Oculus plugin opens it before
+ * touching LibOVR: no event means "Oculus isn't installed", so the runtime is
+ * never loaded. We create it ourselves, signaled unless OVRSTUB_HMD_CONNECTED=0.
+ * The handle stays open for the life of the process.
+ */
+static void create_hmd_connected_event(void)
+{
+    const char *v = getenv("OVRSTUB_HMD_CONNECTED");
+    BOOL connected = !(v && v[0] == '0');
+    g_hmd_event = CreateEventW(NULL, TRUE, connected, L"OculusHMDConnected");
+    if (!g_hmd_event)
+        LOG("could not create OculusHMDConnected event (error %lu)", GetLastError());
+    else
+        LOG("OculusHMDConnected event created (%s)",
+            connected ? "signaled: HMD present" : "not signaled: no HMD");
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -346,6 +367,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(inst);
         QueryPerformanceFrequency(&g_qpc_freq);
         LOG("loaded (no-HMD stub)");
+        create_hmd_connected_event();
         redirect_install(inst);
     }
     return TRUE;

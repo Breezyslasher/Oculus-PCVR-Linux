@@ -120,6 +120,7 @@ type IDs are the likely cause. See the research notes for how to check them.
 | `OVRSTUB_LOCALE` | `en_US` | `ovr_GetLoggedInUserLocale` |
 | `OVRSTUB_MSGTYPE_ENTITLEMENT`, `..._USER_GET_LOGGED_IN_USER`, `..._USER_GET`, `..._PLATFORM_INITIALIZE_WINDOWS_ASYNC` | see `platform_types.h` | Override a message type ID |
 | `OVRSTUB_LOG` | unset | Also append logs to this file |
+| `OVRSTUB_HMD_CONNECTED` | `1` | `0` leaves the `OculusHMDConnected` event unsignaled (service running, no headset) |
 
 ## Layout
 

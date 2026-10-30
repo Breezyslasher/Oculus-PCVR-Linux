@@ -30,10 +30,30 @@ file as things get confirmed or disproved on real games.
   Known gap: callers that get `LoadLibrary*` through `GetProcAddress` are
   not redirected.
 
+### First real game: Spider-Man: Homecoming VR (Unreal Engine 4, 2017)
+
+- No Oculus DLLs in the game folder. The LibOVR loader is built into
+  `SMHCVR/Binaries/Win64/SMHCVR-Win64-Shipping.exe`, and so is the Platform
+  SDK loader. It formats `%lsLibOVRRT%hs_%d.dll` and
+  `%lsLibOVRPlatform%hs_%d.dll` with a directory prefix, so **Unreal loads
+  the Platform SDK from the Oculus install, not the game folder.**
+- Injection under Proton 10 works: the shim loads in the game and installs
+  its redirect, and DXVK starts. But the runtime was never requested, and
+  the game exited with code 3.
+- Cause: before touching LibOVR, Unreal's Oculus plugin opens the named event
+  `OculusHMDConnected` (created by the Oculus service, signaled while a
+  headset is attached). Without it, the plugin treats Oculus as not
+  installed. The shim now creates that event at startup (signaled by
+  default; `OVRSTUB_HMD_CONNECTED=0` to leave it unsignaled), the same idea
+  as Revive's `OpenEventW` hook. The redirect also covers
+  `LibOVRPlatform64_1.dll`, and `ovrl prefix-setup` installs the Platform
+  stub next to the shim.
+
 ## Platform SDK (`LibOVRPlatform64_1.dll`)
 
-- Ships inside each game's folder, so the stub can just replace it there
-  (`ovrl stubs install`).
+- Unity games ship it in the game folder, so the stub can replace it there
+  (`ovrl stubs install`). Unreal games load it from the Oculus install
+  instead (see above), where `ovrl prefix-setup` puts the stub.
 - Unity games call it through the C# `Oculus.Platform` wrapper (`DllImport`,
   bound lazily per function), so a missing export only fails when that
   function is called. Native games link an import library, so a missing export

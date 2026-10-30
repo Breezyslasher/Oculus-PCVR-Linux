@@ -85,8 +85,11 @@ def cmd_prefix_setup(args: argparse.Namespace) -> int:
     runtime_dir = base / "Support" / "oculus-runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_build_file(build, RUNTIME_DLL), runtime_dir / RUNTIME_DLL)
+    # Some engines (e.g. Unreal) load the Platform SDK from the Oculus install
+    # rather than the game folder; the shim redirects those loads here.
+    shutil.copy2(_build_file(build, PLATFORM_DLL), runtime_dir / PLATFORM_DLL)
     shutil.copy2(_build_file(build, INJECTOR), base / INJECTOR)
-    print(f"copied shim and injector to {base}")
+    print(f"copied shim, Platform stub and injector to {base}")
 
     env = dict(os.environ, WINEPREFIX=str(wine_prefix))
     for view in ("/reg:32", "/reg:64"):

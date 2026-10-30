@@ -17,6 +17,8 @@ typedef HMODULE(WINAPI *LoadLibraryExA_t)(LPCSTR, HANDLE, DWORD);
 
 static HMODULE g_self, g_kernel32, g_kernelbase;
 static WCHAR g_self_path[MAX_PATH];
+/* Our Platform SDK stub, if it sits next to this DLL. */
+static WCHAR g_platform_path[MAX_PATH];
 static LoadLibraryW_t real_LoadLibraryW;
 static LoadLibraryExW_t real_LoadLibraryExW;
 static LoadLibraryA_t real_LoadLibraryA;
@@ -31,38 +33,50 @@ struct target {
 };
 static struct target g_targets[4];
 
-static int is_runtime_name_w(LPCWSTR path)
+static LPCWSTR base_name(LPCWSTR path)
 {
-    if (!path)
-        return 0;
     LPCWSTR base = path;
     for (LPCWSTR p = path; *p; p++)
         if (*p == L'\\' || *p == L'/')
             base = p + 1;
-    return _wcsnicmp(base, L"LibOVRRT64_1", 12) == 0;
+    return base;
 }
 
-static int is_runtime_name_a(LPCSTR path)
+/* Where a load of `path` should really go, or NULL to leave it alone. */
+static LPCWSTR redirect_target_w(LPCWSTR path)
 {
-    WCHAR wide[MAX_PATH];
+    if (!path)
+        return NULL;
+    LPCWSTR base = base_name(path);
+    if (_wcsnicmp(base, L"LibOVRRT64_1", 12) == 0)
+        return g_self_path;
+    if (g_platform_path[0] && _wcsnicmp(base, L"LibOVRPlatform64_1", 18) == 0)
+        return g_platform_path;
+    return NULL;
+}
+
+static LPCWSTR redirect_target_a(LPCSTR path, WCHAR *wide)
+{
     if (!path || !MultiByteToWideChar(CP_ACP, 0, path, -1, wide, MAX_PATH))
-        return 0;
-    return is_runtime_name_w(wide);
+        return NULL;
+    return redirect_target_w(wide);
 }
 
 static void patch_all_modules(void);
 
-static HMODULE redirect_self(LPCWSTR requested)
+static HMODULE redirect(LPCWSTR requested, LPCWSTR target)
 {
-    LOG("redirecting load of %ls to %ls", requested, g_self_path);
-    /* Load ourselves again so the caller's FreeLibrary balances the count. */
-    return real_LoadLibraryW(g_self_path);
+    LOG("redirecting load of %ls to %ls", requested, target);
+    /* For our own module this just bumps the reference count, so the
+     * caller's FreeLibrary stays balanced. */
+    return real_LoadLibraryW(target);
 }
 
 static HMODULE WINAPI hook_LoadLibraryW(LPCWSTR name)
 {
-    if (is_runtime_name_w(name))
-        return redirect_self(name);
+    LPCWSTR target = redirect_target_w(name);
+    if (target)
+        return redirect(name, target);
     HMODULE m = real_LoadLibraryW(name);
     if (m)
         patch_all_modules();
@@ -71,8 +85,9 @@ static HMODULE WINAPI hook_LoadLibraryW(LPCWSTR name)
 
 static HMODULE WINAPI hook_LoadLibraryExW(LPCWSTR name, HANDLE file, DWORD flags)
 {
-    if (is_runtime_name_w(name) && !(flags & LOAD_LIBRARY_AS_DATAFILE))
-        return redirect_self(name);
+    LPCWSTR target = redirect_target_w(name);
+    if (target && !(flags & LOAD_LIBRARY_AS_DATAFILE))
+        return redirect(name, target);
     HMODULE m = real_LoadLibraryExW(name, file, flags);
     if (m)
         patch_all_modules();
@@ -81,11 +96,10 @@ static HMODULE WINAPI hook_LoadLibraryExW(LPCWSTR name, HANDLE file, DWORD flags
 
 static HMODULE WINAPI hook_LoadLibraryA(LPCSTR name)
 {
-    if (is_runtime_name_a(name)) {
-        WCHAR wide[MAX_PATH];
-        MultiByteToWideChar(CP_ACP, 0, name, -1, wide, MAX_PATH);
-        return redirect_self(wide);
-    }
+    WCHAR wide[MAX_PATH];
+    LPCWSTR target = redirect_target_a(name, wide);
+    if (target)
+        return redirect(wide, target);
     HMODULE m = real_LoadLibraryA(name);
     if (m)
         patch_all_modules();
@@ -94,11 +108,10 @@ static HMODULE WINAPI hook_LoadLibraryA(LPCSTR name)
 
 static HMODULE WINAPI hook_LoadLibraryExA(LPCSTR name, HANDLE file, DWORD flags)
 {
-    if (is_runtime_name_a(name) && !(flags & LOAD_LIBRARY_AS_DATAFILE)) {
-        WCHAR wide[MAX_PATH];
-        MultiByteToWideChar(CP_ACP, 0, name, -1, wide, MAX_PATH);
-        return redirect_self(wide);
-    }
+    WCHAR wide[MAX_PATH];
+    LPCWSTR target = redirect_target_a(name, wide);
+    if (target && !(flags & LOAD_LIBRARY_AS_DATAFILE))
+        return redirect(wide, target);
     HMODULE m = real_LoadLibraryExA(name, file, flags);
     if (m)
         patch_all_modules();
@@ -165,6 +178,13 @@ void redirect_install(HMODULE self)
 
     g_self = self;
     GetModuleFileNameW(self, g_self_path, MAX_PATH);
+    wcscpy(g_platform_path, g_self_path);
+    WCHAR *slash = (WCHAR *)base_name(g_platform_path);
+    *slash = 0;
+    if (wcslen(g_platform_path) + 32 < MAX_PATH)
+        wcscat(g_platform_path, L"LibOVRPlatform64_1.dll");
+    if (GetFileAttributesW(g_platform_path) == INVALID_FILE_ATTRIBUTES)
+        g_platform_path[0] = 0;
 
     for (int i = 0; i < 4; i++) {
         g_targets[i].name = names[i];
@@ -180,5 +200,6 @@ void redirect_install(HMODULE self)
     real_LoadLibraryExA = (LoadLibraryExA_t)g_targets[3].addrs[r];
 
     patch_all_modules();
-    LOG("installed LoadLibrary redirect for LibOVRRT64_1.dll");
+    LOG("installed LoadLibrary redirect for LibOVRRT64_1.dll%s",
+        g_platform_path[0] ? " and LibOVRPlatform64_1.dll" : "");
 }

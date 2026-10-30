@@ -1,6 +1,7 @@
-/* Mimics a game's LibOVR loader: load the runtime from the (absent) Oculus
- * install path. Run through ovrinject.exe, the load must be redirected to the
- * injected shim, which then reports "runtime present, no HMD". */
+/* Mimics Unreal's Oculus plugin: check the OculusHMDConnected event, then load
+ * the runtime and the Platform SDK from the (absent) Oculus install path. Run
+ * through ovrinject.exe, both loads must be redirected to our stubs, and the
+ * runtime then reports "runtime present, no HMD". */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +14,21 @@ typedef hmd_desc (*desc_t)(void *);
 
 int main(void)
 {
+    HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"OculusHMDConnected");
+    if (!ev) { printf("FAIL: OculusHMDConnected event missing\n"); return 1; }
+    if (WaitForSingleObject(ev, 0) != WAIT_OBJECT_0) {
+        printf("FAIL: OculusHMDConnected not signaled\n");
+        return 1;
+    }
+    CloseHandle(ev);
+
+    HMODULE plat = LoadLibraryW(
+        L"C:\\Program Files\\Oculus\\Support\\oculus-runtime\\LibOVRPlatform64_1.dll");
+    if (!plat || !GetProcAddress(plat, "ovr_PlatformInitializeWindows")) {
+        printf("FAIL: Platform SDK load was not redirected\n");
+        return 1;
+    }
+
     HMODULE rt = LoadLibraryW(
         L"C:\\Program Files\\Oculus\\Support\\oculus-runtime\\LibOVRRT64_1.dll");
     if (!rt) { printf("FAIL: runtime load was not redirected\n"); return 1; }
@@ -31,6 +47,6 @@ int main(void)
         printf("FAIL: ovr_Create should return ovrError_NoHmd\n");
         return 1;
     }
-    printf("PASS: libovr redirect + no-HMD\n");
+    printf("PASS: HMD event, runtime + platform redirect, no-HMD\n");
     return 0;
 }
