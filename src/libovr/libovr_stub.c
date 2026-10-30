@@ -1415,6 +1415,23 @@ static void log_ovrstub_env(void)
         FreeEnvironmentStringsW(env);
 }
 
+/* Log the Wine/Proton build: Proton's VR bridge only knows the OpenVR
+ * interface versions that existed when it was built, so an older Proton
+ * can connect to SteamVR yet hand back no IVRSystem/IVRCompositor. */
+static void log_wine_version(void)
+{
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const char *(CDECL *version)(void) = NULL, *(CDECL *build)(void) = NULL;
+    if (ntdll) {
+        version = (const char *(CDECL *)(void))(void *)GetProcAddress(ntdll, "wine_get_version");
+        build = (const char *(CDECL *)(void))(void *)GetProcAddress(ntdll, "wine_get_build_id");
+    }
+    if (version)
+        LOG("running on Wine %s (%s)", version(), build ? build() : "unknown build");
+    else
+        LOG("not running on Wine");
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1422,6 +1439,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(inst);
         QueryPerformanceFrequency(&g_qpc_freq);
         LOG("loaded (build %s)", OVRSTUB_BUILD_ID);
+        log_wine_version();
         log_ovrstub_env();
         create_hmd_connected_event();
         sigcheck_install();

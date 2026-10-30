@@ -48,6 +48,27 @@ static void *resolve(HMODULE m, const char *name)
  * prefix for `proton run`). A bare-name load could instead return a copy the
  * game itself ships and already loaded (Unity's OpenVR XR plugin bundles
  * one), whose age can make the interface lookups below fail. */
+/* "major.minor.build.rev" from a loaded module's version resource. */
+static const char *module_version(HMODULE m)
+{
+    static char buf[48];
+    snprintf(buf, sizeof(buf), "unknown");
+    HRSRC r = FindResourceW(m, MAKEINTRESOURCEW(1), (LPCWSTR)RT_VERSION);
+    HGLOBAL g = r ? LoadResource(m, r) : NULL;
+    const BYTE *p = g ? LockResource(g) : NULL;
+    DWORD n = r ? SizeofResource(m, r) : 0;
+    for (DWORD i = 0; p && i + sizeof(VS_FIXEDFILEINFO) <= n; i += 4) {
+        const VS_FIXEDFILEINFO *fi = (const VS_FIXEDFILEINFO *)(p + i);
+        if (fi->dwSignature == 0xFEEF04BD) {
+            snprintf(buf, sizeof(buf), "%lu.%lu.%lu.%lu",
+                     (unsigned long)HIWORD(fi->dwFileVersionMS), (unsigned long)LOWORD(fi->dwFileVersionMS),
+                     (unsigned long)HIWORD(fi->dwFileVersionLS), (unsigned long)LOWORD(fi->dwFileVersionLS));
+            break;
+        }
+    }
+    return buf;
+}
+
 static HMODULE load_openvr_api(void)
 {
     HMODULE m = NULL, self = NULL;
@@ -67,7 +88,7 @@ static HMODULE load_openvr_api(void)
     if (!m)
         m = LoadLibraryW(L"openvr_api.dll");
     if (m && GetModuleFileNameW(m, path, MAX_PATH))
-        LOG("using %ls", path);
+        LOG("using %ls (version %s)", path, module_version(m));
     return m;
 }
 
@@ -112,7 +133,9 @@ bool vr_backend_init(void)
     snprintf(name, sizeof(name), "FnTable:%s", IVRCompositor_Version);
     g_compositor = (struct VR_IVRCompositor_FnTable *)p_GetGenericInterface(name, &err2);
     if (!g_system || !g_compositor) {
-        LOG("could not get OpenVR interfaces (%s: %s / %s: %s); system=%p compositor=%p",
+        LOG("could not get OpenVR interfaces (%s: %s / %s: %s); system=%p compositor=%p. "
+            "Proton's VR bridge probably doesn't offer these versions: try a newer Proton "
+            "(Proton 11 works) for this game",
             IVRSystem_Version, p_GetErrDesc ? p_GetErrDesc(err) : "?",
             IVRCompositor_Version, p_GetErrDesc ? p_GetErrDesc(err2) : "?",
             (void *)g_system, (void *)g_compositor);
