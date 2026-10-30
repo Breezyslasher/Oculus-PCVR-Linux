@@ -31,6 +31,14 @@ static struct ovrHmdStruct g_hmd;
 
 #define EXPORT __declspec(dllexport)
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
+/* Log the first call of each entry point, so when a game crashes the last
+ * line in the log names the call it was in (or the one just before). */
+#define TRACE_FIRST()                                        \
+    do {                                                     \
+        static LONG once_;                                   \
+        if (!InterlockedExchange(&once_, 1))                 \
+            LOG("-> %s", __func__);                          \
+    } while (0)
 
 /* Lets `ovrl` recognize our own stub DLLs and never mistake one for a
  * game's genuine file (e.g. when backing up before install). */
@@ -52,6 +60,7 @@ static ovrResult set_error(ovrResult r, const char *msg)
 
 EXPORT ovrResult ovr_Initialize(const ovrInitParams *params)
 {
+    TRACE_FIRST();
     LOG("ovr_Initialize(flags=0x%x, minor=%u)", params ? params->Flags : 0,
         params ? params->RequestedMinorVersion : 0);
     g_initialized = 1;
@@ -60,29 +69,34 @@ EXPORT ovrResult ovr_Initialize(const ovrInitParams *params)
 
 EXPORT void ovr_Shutdown(void)
 {
+    TRACE_FIRST();
     LOG("ovr_Shutdown");
     g_initialized = 0;
 }
 
 EXPORT void ovr_GetLastErrorInfo(ovrErrorInfo *info)
 {
+    TRACE_FIRST();
     if (info)
         *info = g_last_error;
 }
 
 EXPORT const char *ovr_GetVersionString(void)
 {
+    TRACE_FIRST();
     return "1.0.0-ovrstub";
 }
 
 EXPORT int ovr_TraceMessage(int level, const char *message)
 {
+    TRACE_FIRST();
     LOG("trace[%d]: %s", level, message ? message : "");
     return 0;
 }
 
 EXPORT ovrResult ovr_IdentifyClient(const char *identity)
 {
+    TRACE_FIRST();
     LOG("ovr_IdentifyClient: %s", identity ? identity : "");
     return ovrSuccess;
 }
@@ -91,6 +105,7 @@ EXPORT ovrResult ovr_IdentifyClient(const char *identity)
 
 EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
 {
+    TRACE_FIRST();
     ovrHmdDesc desc;
     (void)session;
     memset(&desc, 0, sizeof(desc));
@@ -112,11 +127,15 @@ EXPORT ovrHmdDesc ovr_GetHmdDesc(ovrSession session)
     desc.DisplayRefreshRate = 90.0f;
     desc.AvailableHmdCaps = desc.DefaultHmdCaps = 0;
     desc.AvailableTrackingCaps = desc.DefaultTrackingCaps = 0;
+    LOG("ovr_GetHmdDesc -> %dx%d, fov L %.2f/%.2f/%.2f/%.2f", desc.Resolution.w,
+        desc.Resolution.h, desc.DefaultEyeFov[0].UpTan, desc.DefaultEyeFov[0].DownTan,
+        desc.DefaultEyeFov[0].LeftTan, desc.DefaultEyeFov[0].RightTan);
     return desc;
 }
 
 EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 {
+    TRACE_FIRST();
     if (luid)
         memset(luid, 0, sizeof(*luid));
     if (session)
@@ -136,6 +155,7 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
 
 EXPORT void ovr_Destroy(ovrSession session)
 {
+    TRACE_FIRST();
     if (session == &g_hmd) {
         g_hmd.active = 0;
         vr_backend_shutdown();
@@ -145,6 +165,7 @@ EXPORT void ovr_Destroy(ovrSession session)
 
 EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *status)
 {
+    TRACE_FIRST();
     if (!status)
         return set_error(ovrError_InvalidParameter, "null status");
     memset(status, 0, sizeof(*status));
@@ -158,12 +179,14 @@ EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *stat
 
 EXPORT unsigned ovr_GetTrackerCount(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
     return 0;
 }
 
 EXPORT ovrTrackerDesc ovr_GetTrackerDesc(ovrSession session, unsigned index)
 {
+    TRACE_FIRST();
     ovrTrackerDesc d;
     (void)session; (void)index;
     memset(&d, 0, sizeof(d));
@@ -172,6 +195,7 @@ EXPORT ovrTrackerDesc ovr_GetTrackerDesc(ovrSession session, unsigned index)
 
 EXPORT ovrTrackerPose ovr_GetTrackerPose(ovrSession session, unsigned index)
 {
+    TRACE_FIRST();
     ovrTrackerPose p;
     (void)session; (void)index;
     memset(&p, 0, sizeof(p));
@@ -181,6 +205,7 @@ EXPORT ovrTrackerPose ovr_GetTrackerPose(ovrSession session, unsigned index)
 EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
                                              ovrBool latencyMarker)
 {
+    TRACE_FIRST();
     ovrTrackingState s;
     (void)absTime; (void)latencyMarker;
     memset(&s, 0, sizeof(s));
@@ -198,6 +223,7 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
 
 EXPORT ovrResult ovr_Lookup(const char *name, void **data)
 {
+    TRACE_FIRST();
     LOG("ovr_Lookup(%s)", name ? name : "(null)");
     if (data)
         *data = NULL;
@@ -206,17 +232,20 @@ EXPORT ovrResult ovr_Lookup(const char *name, void **data)
 
 EXPORT unsigned ovr_GetEnabledCaps(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
     return 0;
 }
 
 EXPORT void ovr_SetEnabledCaps(ovrSession session, unsigned caps)
 {
+    TRACE_FIRST();
     (void)session; (void)caps;
 }
 
 EXPORT unsigned ovr_GetTrackingCaps(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
     return 0;
 }
@@ -226,6 +255,7 @@ EXPORT ovrTrackingState ovr_GetTrackingStateWithSensorData(ovrSession session,
                                                            ovrBool latencyMarker,
                                                            ovrSensorData *sensor)
 {
+    TRACE_FIRST();
     if (sensor)
         memset(sensor, 0, sizeof(*sensor));
     return ovr_GetTrackingState(session, absTime, latencyMarker);
@@ -234,6 +264,7 @@ EXPORT ovrTrackingState ovr_GetTrackingStateWithSensorData(ovrSession session,
 EXPORT ovrResult ovr_GetExternalCameras(ovrSession session, void *cameras,
                                         unsigned *inoutCameraCount)
 {
+    TRACE_FIRST();
     (void)session; (void)cameras;
     if (inoutCameraCount)
         *inoutCameraCount = 0;
@@ -244,6 +275,7 @@ EXPORT ovrResult ovr_SetExternalCameraProperties(ovrSession session, const char 
                                                  const void *intrinsics,
                                                  const void *extrinsics)
 {
+    TRACE_FIRST();
     (void)session; (void)name; (void)intrinsics; (void)extrinsics;
     return ovrSuccess;
 }
@@ -251,6 +283,7 @@ EXPORT ovrResult ovr_SetExternalCameraProperties(ovrSession session, const char 
 /* Audio device queries: report the system default (WAVE_MAPPER / empty). */
 EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(ovrSession session, unsigned *deviceOutId)
 {
+    TRACE_FIRST();
     (void)session;
     if (deviceOutId)
         *deviceOutId = 0;
@@ -259,6 +292,7 @@ EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(ovrSession session, unsigned *devic
 
 EXPORT ovrResult ovr_GetAudioDeviceInWaveId(ovrSession session, unsigned *deviceInId)
 {
+    TRACE_FIRST();
     (void)session;
     if (deviceInId)
         *deviceInId = 0;
@@ -267,6 +301,7 @@ EXPORT ovrResult ovr_GetAudioDeviceInWaveId(ovrSession session, unsigned *device
 
 EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(ovrSession session, wchar_t *buffer)
 {
+    TRACE_FIRST();
     (void)session;
     if (buffer)
         buffer[0] = 0;
@@ -275,6 +310,7 @@ EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(ovrSession session, wchar_t *buffe
 
 EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(ovrSession session, wchar_t *buffer)
 {
+    TRACE_FIRST();
     (void)session;
     if (buffer)
         buffer[0] = 0;
@@ -283,6 +319,7 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(ovrSession session, wchar_t *buffer
 
 EXPORT ovrResult ovr_GetAudioDeviceOutGuid(ovrSession session, GUID *guid)
 {
+    TRACE_FIRST();
     (void)session;
     if (guid)
         memset(guid, 0, sizeof(*guid));
@@ -291,6 +328,7 @@ EXPORT ovrResult ovr_GetAudioDeviceOutGuid(ovrSession session, GUID *guid)
 
 EXPORT ovrResult ovr_GetAudioDeviceInGuid(ovrSession session, GUID *guid)
 {
+    TRACE_FIRST();
     (void)session;
     if (guid)
         memset(guid, 0, sizeof(*guid));
@@ -299,6 +337,7 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuid(ovrSession session, GUID *guid)
 
 EXPORT ovrResult ovr_SetSynchronizationQueueVk(ovrSession session, void *queue)
 {
+    TRACE_FIRST();
     (void)session; (void)queue;
     return ovrSuccess;
 }
@@ -306,11 +345,13 @@ EXPORT ovrResult ovr_SetSynchronizationQueueVk(ovrSession session, void *queue)
 /* Misspelled variant that shipped in some SDK versions. */
 EXPORT ovrResult ovr_SetSynchonizationQueueVk(ovrSession session, void *queue)
 {
+    TRACE_FIRST();
     return ovr_SetSynchronizationQueueVk(session, queue);
 }
 
 EXPORT ovrTouchHapticsDesc ovr_GetTouchHapticsDesc(ovrSession session, int type)
 {
+    TRACE_FIRST();
     ovrTouchHapticsDesc d;
     (void)session; (void)type;
     memset(&d, 0, sizeof(d));
@@ -319,6 +360,7 @@ EXPORT ovrTouchHapticsDesc ovr_GetTouchHapticsDesc(ovrSession session, int type)
 
 EXPORT ovrHmdColorDesc ovr_GetHmdColorDesc(ovrSession session)
 {
+    TRACE_FIRST();
     ovrHmdColorDesc d;
     (void)session;
     memset(&d, 0, sizeof(d));
@@ -328,6 +370,7 @@ EXPORT ovrHmdColorDesc ovr_GetHmdColorDesc(ovrSession session)
 EXPORT ovrSizei ovr_GetFovTextureSize(ovrSession session, ovrEyeType eye,
                                       ovrFovPort fov, float pixelsPerDisplayPixel)
 {
+    TRACE_FIRST();
     ovrSizei s = {0, 0};
     (void)session; (void)eye; (void)fov;
     if (vr_backend_active()) {
@@ -343,6 +386,7 @@ EXPORT ovrSizei ovr_GetFovTextureSize(ovrSession session, ovrEyeType eye,
 EXPORT ovrEyeRenderDescV1 ovr_GetRenderDesc(ovrSession session, ovrEyeType eye,
                                             ovrFovPort fov)
 {
+    TRACE_FIRST();
     ovrEyeRenderDescV1 d;
     (void)session;
     memset(&d, 0, sizeof(d));
@@ -362,6 +406,7 @@ EXPORT ovrEyeRenderDescV1 ovr_GetRenderDesc(ovrSession session, ovrEyeType eye,
 EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
                                            ovrFovPort fov)
 {
+    TRACE_FIRST();
     ovrEyeRenderDesc d;
     (void)session;
     memset(&d, 0, sizeof(d));
@@ -383,6 +428,7 @@ EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
 #define NO_SESSION(name)                                     \
     EXPORT ovrResult name(void)                              \
     {                                                        \
+        TRACE_FIRST();                                       \
         return set_error(ovrError_InvalidSession, #name ": no session"); \
     }
 
@@ -416,15 +462,23 @@ EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevic
                                               const ovrTextureSwapChainDesc *desc,
                                               ovrTextureSwapChain *out)
 {
+    TRACE_FIRST();
     if (out)
         *out = NULL;
     if (session != &g_hmd || !vr_backend_active())
         return set_error(ovrError_InvalidSession, "no session");
     if (!d3dDevice || !desc || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
+    LOG("ovr_CreateTextureSwapChainDX(type=%d fmt=%d %dx%d array=%d mips=%d "
+        "samples=%d static=%d misc=0x%x bind=0x%x)", desc->Type, desc->Format,
+        desc->Width, desc->Height, desc->ArraySize, desc->MipLevels,
+        desc->SampleCount, desc->StaticImage, desc->MiscFlags, desc->BindFlags);
     ovrTextureSwapChain c = swapchain_d3d_create(d3dDevice, desc);
-    if (!c)
+    if (!c) {
+        LOG("  -> swap chain creation FAILED");
         return set_error(ovrError_RuntimeException, "swap chain creation failed");
+    }
+    LOG("  -> chain %p, %d buffers", (void *)c, swapchain_d3d_length(c));
     *out = c;
     return ovrSuccess;
 }
@@ -432,6 +486,7 @@ EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevic
 EXPORT ovrResult ovr_GetTextureSwapChainLength(ovrSession session,
                                                ovrTextureSwapChain chain, int *out)
 {
+    TRACE_FIRST();
     (void)session;
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -442,6 +497,7 @@ EXPORT ovrResult ovr_GetTextureSwapChainLength(ovrSession session,
 EXPORT ovrResult ovr_GetTextureSwapChainCurrentIndex(ovrSession session,
                                                      ovrTextureSwapChain chain, int *out)
 {
+    TRACE_FIRST();
     (void)session;
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -453,6 +509,7 @@ EXPORT ovrResult ovr_GetTextureSwapChainDesc(ovrSession session,
                                              ovrTextureSwapChain chain,
                                              ovrTextureSwapChainDesc *out)
 {
+    TRACE_FIRST();
     (void)session;
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -471,6 +528,7 @@ EXPORT ovrResult ovr_GetTextureSwapChainBufferDX(ovrSession session,
                                                  ovrTextureSwapChain chain, int index,
                                                  const void *iid, void **out)
 {
+    TRACE_FIRST();
     (void)session;
     if (!chain || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -483,6 +541,7 @@ EXPORT ovrResult ovr_GetTextureSwapChainBufferDX(ovrSession session,
 
 EXPORT ovrResult ovr_CommitTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
 {
+    TRACE_FIRST();
     (void)session;
     if (!chain)
         return set_error(ovrError_InvalidParameter, "null chain");
@@ -492,6 +551,7 @@ EXPORT ovrResult ovr_CommitTextureSwapChain(ovrSession session, ovrTextureSwapCh
 
 EXPORT void ovr_DestroyTextureSwapChain(ovrSession session, ovrTextureSwapChain chain)
 {
+    TRACE_FIRST();
     (void)session;
     swapchain_d3d_destroy(chain);
 }
@@ -502,6 +562,7 @@ EXPORT ovrResult ovr_CreateMirrorTextureDX(ovrSession session, void *d3dDevice,
                                            const ovrMirrorTextureDesc *desc,
                                            ovrMirrorTexture *out)
 {
+    TRACE_FIRST();
     if (out)
         *out = NULL;
     if (session != &g_hmd || !d3dDevice || !desc || !out)
@@ -527,12 +588,14 @@ EXPORT ovrResult ovr_CreateMirrorTextureWithOptionsDX(ovrSession session, void *
                                                       const ovrMirrorTextureDesc *desc,
                                                       ovrMirrorTexture *out)
 {
+    TRACE_FIRST();
     return ovr_CreateMirrorTextureDX(session, d3dDevice, desc, out);
 }
 
 EXPORT ovrResult ovr_GetMirrorTextureBufferDX(ovrSession session, ovrMirrorTexture mirror,
                                               const void *iid, void **out)
 {
+    TRACE_FIRST();
     (void)session;
     if (!mirror || !out)
         return set_error(ovrError_InvalidParameter, "null arg");
@@ -577,6 +640,10 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
         }
     }
     vr_backend_present();
+    static LONG frames_;
+    LONG f = InterlockedIncrement(&frames_);
+    if (f <= 3 || f % 900 == 0)
+        LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
     return submitted ? ovrSuccess
         : set_error(ovrSuccess_NotVisible, "no eye layer submitted");
 }
@@ -586,6 +653,7 @@ EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
                                  const ovrLayerHeader *const *layerPtrList,
                                  unsigned layerCount)
 {
+    TRACE_FIRST();
     (void)frameIndex; (void)viewScaleDesc;
     if (session != &g_hmd || !vr_backend_active())
         return set_error(ovrError_InvalidSession, "no session");
@@ -599,11 +667,13 @@ EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
                                   const ovrLayerHeader *const *layerPtrList,
                                   unsigned layerCount)
 {
+    TRACE_FIRST();
     return ovr_SubmitFrame(session, frameIndex, viewScaleDesc, layerPtrList, layerCount);
 }
 
 EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
 {
+    TRACE_FIRST();
     (void)frameIndex;
     if (session != &g_hmd || !vr_backend_active())
         return set_error(ovrError_InvalidSession, "no session");
@@ -613,6 +683,7 @@ EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
 
 EXPORT ovrResult ovr_BeginFrame(ovrSession session, long long frameIndex)
 {
+    TRACE_FIRST();
     (void)frameIndex;
     if (session != &g_hmd || !vr_backend_active())
         return set_error(ovrError_InvalidSession, "no session");
@@ -624,6 +695,7 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
                               const ovrLayerHeader *const *layerPtrList,
                               unsigned layerCount)
 {
+    TRACE_FIRST();
     (void)frameIndex; (void)viewScaleDesc;
     if (session != &g_hmd || !vr_backend_active())
         return set_error(ovrError_InvalidSession, "no session");
@@ -633,23 +705,27 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
 
 EXPORT int ovr_GetTrackingOriginType(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
     return 0;
 }
 
 EXPORT void ovr_ClearShouldRecenterFlag(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
 }
 
 EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
 {
+    TRACE_FIRST();
     (void)session;
     return 0;
 }
 
 EXPORT void ovr_DestroyMirrorTexture(ovrSession session, ovrMirrorTexture tex)
 {
+    TRACE_FIRST();
     (void)session;
     swapchain_d3d_destroy((ovrTextureSwapChain)tex);
 }
@@ -658,6 +734,7 @@ EXPORT void ovr_DestroyMirrorTexture(ovrSession session, ovrMirrorTexture tex)
 
 EXPORT double ovr_GetTimeInSeconds(void)
 {
+    TRACE_FIRST();
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return (double)now.QuadPart / (double)g_qpc_freq.QuadPart;
@@ -665,6 +742,7 @@ EXPORT double ovr_GetTimeInSeconds(void)
 
 EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameIndex)
 {
+    TRACE_FIRST();
     (void)session; (void)frameIndex;
     return ovr_GetTimeInSeconds();
 }
@@ -673,36 +751,42 @@ EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameInd
 
 EXPORT ovrBool ovr_GetBool(ovrSession s, const char *name, ovrBool def)
 {
+    TRACE_FIRST();
     (void)s; (void)name;
     return def;
 }
 
 EXPORT ovrBool ovr_SetBool(ovrSession s, const char *name, ovrBool v)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v;
     return ovrFalse;
 }
 
 EXPORT int ovr_GetInt(ovrSession s, const char *name, int def)
 {
+    TRACE_FIRST();
     (void)s; (void)name;
     return def;
 }
 
 EXPORT ovrBool ovr_SetInt(ovrSession s, const char *name, int v)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v;
     return ovrFalse;
 }
 
 EXPORT float ovr_GetFloat(ovrSession s, const char *name, float def)
 {
+    TRACE_FIRST();
     (void)s; (void)name;
     return def;
 }
 
 EXPORT ovrBool ovr_SetFloat(ovrSession s, const char *name, float v)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v;
     return ovrFalse;
 }
@@ -710,6 +794,7 @@ EXPORT ovrBool ovr_SetFloat(ovrSession s, const char *name, float v)
 EXPORT unsigned ovr_GetFloatArray(ovrSession s, const char *name, float *v,
                                   unsigned cap)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v; (void)cap;
     return 0;
 }
@@ -717,18 +802,21 @@ EXPORT unsigned ovr_GetFloatArray(ovrSession s, const char *name, float *v,
 EXPORT ovrBool ovr_SetFloatArray(ovrSession s, const char *name, const float *v,
                                  unsigned n)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v; (void)n;
     return ovrFalse;
 }
 
 EXPORT const char *ovr_GetString(ovrSession s, const char *name, const char *def)
 {
+    TRACE_FIRST();
     (void)s; (void)name;
     return def;
 }
 
 EXPORT ovrBool ovr_SetString(ovrSession s, const char *name, const char *v)
 {
+    TRACE_FIRST();
     (void)s; (void)name; (void)v;
     return ovrFalse;
 }
