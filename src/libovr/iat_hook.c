@@ -374,6 +374,14 @@ static INT_PTR WINAPI unsupported_ovr_entry(void)
     return -1009;
 }
 
+static INT_PTR WINAPI empty_platform_entry(void)
+{
+    static LONG calls;
+    if (InterlockedIncrement(&calls) <= 20)
+        LOG("an unimplemented Platform SDK function was called -> 0/NULL");
+    return 0;
+}
+
 static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
 {
     FARPROC p = real_GetProcAddress(mod, name);
@@ -387,6 +395,17 @@ static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
         if (mod == g_self && !strncmp(name, "ovr_", 4)) {
             TRACE("GetProcAddress(%s) -> not implemented, using stand-in", name);
             return (FARPROC)unsupported_ovr_entry;
+        }
+        /* Same for our Platform SDK stub (it carries our build marker).
+         * Platform functions return handles, strings, counts and flags, so
+         * its stand-in answers 0: NULL / "" -> null / false. Unity's
+         * Platform wrapper resolves these lazily (and retries with an "A"
+         * suffix), and a failed lookup throws inside its message loop. */
+        if (mod != g_self && !strncmp(name, "ovr_", 4) &&
+            real_GetProcAddress(mod, "ovrstub_build_marker")) {
+            TRACE("GetProcAddress(%s) -> not in the Platform stub, using empty stand-in",
+                  name);
+            return (FARPROC)empty_platform_entry;
         }
         TRACE("GetProcAddress(%s) -> MISSING", name);
     }
