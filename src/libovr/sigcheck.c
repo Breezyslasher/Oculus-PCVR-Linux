@@ -30,16 +30,54 @@
 static __typeof__(&WinVerifyTrust) real_WinVerifyTrust;
 static int g_enabled = 1;
 
-static int is_stub_file(LPCWSTR path)
+/* True only for a file that is actually one of our stubs (carries the build
+ * marker). A genuine Meta file at the same name is NOT a stub: it must go
+ * through real verification so the loader can read its true Meta signer. */
+static int is_our_stub_file(LPCWSTR path)
 {
+    static const char marker[] = "OVRSTUB-BUILD-MARKER-v1";
+    const DWORD mlen = sizeof(marker) - 1;
+    const DWORD keep = mlen - 1;  /* bytes carried between reads for overlap */
+    HANDLE h;
+    char buf[65536];
+    DWORD carry = 0, total = 0;
+    int found = 0;
+
     if (!path)
         return 0;
     LPCWSTR base = path;
     for (LPCWSTR p = path; *p; p++)
         if (*p == L'\\' || *p == L'/')
             base = p + 1;
-    return _wcsnicmp(base, L"LibOVRRT64_1", 12) == 0 ||
-           _wcsnicmp(base, L"LibOVRPlatform64_1", 18) == 0;
+    if (_wcsnicmp(base, L"LibOVRRT64_1", 12) != 0 &&
+        _wcsnicmp(base, L"LibOVRPlatform64_1", 18) != 0)
+        return 0;
+
+    h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    /* Scan for the marker. Each read keeps the last keep bytes of the previous
+     * chunk in front of it, so a match spanning a read boundary is still
+     * found. Our stubs are well under 1 MB. */
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(h, buf + carry, sizeof(buf) - carry, &got, NULL) || !got)
+            break;
+        DWORD avail = carry + got;
+        for (DWORD i = 0; i + mlen <= avail; i++)
+            if (memcmp(buf + i, marker, mlen) == 0) {
+                found = 1;
+                break;
+            }
+        total += got;
+        if (found || total > (4u << 20))
+            break;
+        carry = avail >= keep ? keep : avail;
+        memmove(buf, buf + avail - carry, carry);
+    }
+    CloseHandle(h);
+    return found;
 }
 
 static LPCWSTR verified_file(WINTRUST_DATA *data)
@@ -54,7 +92,10 @@ static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
     WINTRUST_DATA *data = pdata;
     LPCWSTR file = verified_file(data);
 
-    if (g_enabled && is_stub_file(file)) {
+    if (g_enabled && is_our_stub_file(file)) {
+        /* Only our own unsigned stub is reported trusted. A real Meta file at
+         * the same name falls through to real verification below, so the
+         * loader can read its genuine signer. */
         LOG("reporting our stub %ls as trusted", file);
         /* WTD_STATEACTION_VERIFY expects provider state in hWVTStateData for
          * a later CLOSE call. We take neither action, so leave it NULL and
