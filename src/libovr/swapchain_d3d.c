@@ -264,12 +264,29 @@ void swapchain_d3d_probe(ovrTextureSwapChain chain, long frame)
     ID3D11Device_GetImmediateContext(dev, &ctx);
     if (ctx) {
         for (int i = 0; i < c->length; i++) {
-            unsigned l = read_pixel(dev, ctx, c->textures[i], c->format,
-                                    c->width / 4, c->height / 2);
-            unsigned r = read_pixel(dev, ctx, c->textures[i], c->format,
-                                    c->width * 3 / 4, c->height / 2);
-            LOG("frame %ld: chain %p buffer %d%s center pixels L=%08x R=%08x",
-                frame, (void *)c, i, i == c->committed ? " (submitted)" : "", l, r);
+            /* A 3x3 grid in each eye's half; report how many samples are
+             * non-zero and the first non-zero value, plus the centre. */
+            for (int eye = 0; eye < 2; eye++) {
+                int nonzero = 0;
+                unsigned first = 0, centre = 0;
+                for (int gy = 1; gy <= 3; gy++)
+                    for (int gx = 1; gx <= 3; gx++) {
+                        int x = eye * c->width / 2 + gx * c->width / 8;
+                        int y = gy * c->height / 4;
+                        unsigned v = read_pixel(dev, ctx, c->textures[i], c->format, x, y);
+                        if (gx == 2 && gy == 2)
+                            centre = v;
+                        if (v) {
+                            if (!nonzero)
+                                first = v;
+                            nonzero++;
+                        }
+                    }
+                LOG("frame %ld: chain %p buffer %d%s eye %c: %d/9 samples non-zero "
+                    "(first %08x, centre %08x)", frame, (void *)c, i,
+                    i == c->committed ? " (submitted)" : "", eye ? 'R' : 'L',
+                    nonzero, first, centre);
+            }
         }
         ID3D11DeviceContext_Release(ctx);
     }

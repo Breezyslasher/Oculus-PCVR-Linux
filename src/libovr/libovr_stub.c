@@ -781,7 +781,7 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
     LONG f = InterlockedIncrement(&frames_);
     if (f <= 3 || f % 900 == 0)
         LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
-    if (f == 1 || f == 90 || f % 900 == 0) {
+    if (f == 1 || f == 90 || f == 300 || f % 900 == 0) {
         vr_backend_log_compositor_state(f);
         for (unsigned i = 0; i < count; i++) {
             const ovrLayerHeader *h = layers ? layers[i] : NULL;
