@@ -289,7 +289,15 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     # reaches the Wine process; everything after %command% is passed to the
     # injector. Relative names resolve against the shortcut's "Start In" dir.
     hmd = f" -hmd={args.hmd}" if args.hmd else ""
-    launch_opts = (f'OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait {SHIM_INJECT_NAME} '
+    # Write a fresh log next to the exe on every Steam launch so it is never
+    # confused with a stale one from an `ovrl launch` run. Forward slashes keep
+    # the shell in the launch-options field from eating backslashes; skip it if
+    # the path has a space, which a VAR=val prefix there can't carry.
+    env_prefix = "OVRSTUB_INSTALL_ROOT_CA=1"
+    log_win = f"Z:{exe_dir}/ovrstub.log"
+    if " " not in log_win:
+        env_prefix += f" OVRSTUB_LOG={log_win}"
+    launch_opts = (f'{env_prefix} %command% --wait {SHIM_INJECT_NAME} '
                    f'-- "{exe.name}"{hmd}')
     target = exe_dir / INJECTOR
     print("\nAdd the game to Steam as a non-Steam game, then in its Properties:")
