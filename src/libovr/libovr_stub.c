@@ -450,9 +450,27 @@ EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(unsigned *deviceOutId)
     return ovrSuccess;
 }
 
+/* OVRSTUB_AUDIO_IN=none: report that the headset has no microphone
+ * (ovrError_AudioDeviceNotFound), a test switch. The Eastern Edge's last
+ * call before it freezes at its first level is ovr_GetAudioDeviceInGuid, as
+ * if it then opened the microphone and hung inside audio capture. */
+#define ovrError_AudioDeviceNotFound (-2001)
+static int no_audio_in(void)
+{
+    const char *v = getenv("OVRSTUB_AUDIO_IN");
+    if (!v || strcmp(v, "none"))
+        return 0;
+    static LONG logged;
+    if (!InterlockedExchange(&logged, 1))
+        LOG("OVRSTUB_AUDIO_IN=none: reporting no headset microphone");
+    return 1;
+}
+
 EXPORT ovrResult ovr_GetAudioDeviceInWaveId(unsigned *deviceInId)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!deviceInId)
         return set_error(ovrError_InvalidParameter, "null deviceInId");
     *deviceInId = WAVE_MAPPER;
@@ -472,6 +490,8 @@ EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(wchar_t *buffer)
 EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!buffer)
         return set_error(ovrError_InvalidParameter, "null buffer");
     default_endpoint_id(eCapture, buffer);
@@ -517,6 +537,8 @@ EXPORT ovrResult ovr_GetAudioDeviceOutGuid(GUID *guid)
 EXPORT ovrResult ovr_GetAudioDeviceInGuid(GUID *guid)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!guid)
         return set_error(ovrError_InvalidParameter, "null guid");
     static GUID cached;
