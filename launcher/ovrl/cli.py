@@ -12,6 +12,7 @@ import argparse
 import datetime
 import getpass
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -145,8 +146,28 @@ def cmd_stubs(args: argparse.Namespace) -> int:
     return 0
 
 
+def pe_file_version(path: Path) -> tuple[int, int, int, int]:
+    """A PE file's version from its VS_FIXEDFILEINFO, or (0, 0, 0, 0)."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return (0, 0, 0, 0)
+    i = data.find(b"\xbd\x04\xef\xfe")     # VS_FIXEDFILEINFO signature
+    if i < 0 or i + 16 > len(data):
+        return (0, 0, 0, 0)
+    ms = int.from_bytes(data[i + 8:i + 12], "little")
+    ls = int.from_bytes(data[i + 12:i + 16], "little")
+    return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+
+
 def _find_openvr_api(override: str | None) -> Path | None:
-    """Locate SteamVR's 64-bit Windows openvr_api.dll."""
+    """Locate the newest 64-bit Windows openvr_api.dll on this machine.
+
+    SteamVR on Linux may not ship a Windows copy, so games' copies count too.
+    They range from years-old OpenVR 1.0 builds (bundled with Unreal 4.1x)
+    to current ones, and an old one can connect to SteamVR yet fail to hand
+    out the interfaces our shim asks for. So take the highest version.
+    """
     if override:
         p = Path(override).expanduser()
         return p if p.is_file() else None
@@ -156,23 +177,42 @@ def _find_openvr_api(override: str | None) -> Path | None:
         Path.home() / ".steam/root",
         Path.home() / ".local/share/Steam",
         Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
+        Path.home() / "snap/steam/common/.local/share/Steam",
     ]
-    # SteamVR's own copy first; failing that, any installed game's 64-bit
-    # Windows build (SteamVR on Linux may not ship one, games usually do).
-    roots = [r for r in steam_roots if r.is_dir()]
-    for root in roots:
-        cand = root / "steamapps/common/SteamVR/bin/win64/openvr_api.dll"
-        if cand.is_file():
-            return cand
-    for root in roots:
-        for pattern in ("steamapps/common/*/bin/win64/openvr_api.dll",
+    seen, found = set(), []
+    for root in (r for r in steam_roots if r.is_dir()):
+        for pattern in ("steamapps/common/SteamVR/bin/win64/openvr_api.dll",
+                        "steamapps/common/*/bin/win64/openvr_api.dll",
                         "steamapps/common/*/*/Binaries/ThirdParty/OpenVR/*/Win64/openvr_api.dll",
                         "steamapps/common/*/*_Data/Plugins/x86_64/openvr_api.dll",
                         "steamapps/common/*/*_Data/Plugins/openvr_api.dll"):
-            for cand in sorted(root.glob(pattern)):
-                if cand.is_file() and pe_is_x64(cand):
-                    return cand
-    return None
+            for cand in root.glob(pattern):
+                real = cand.resolve()
+                if real in seen or not cand.is_file() or not pe_is_x64(cand):
+                    continue
+                seen.add(real)
+                found.append((_openvr_rank(cand), cand))
+    if not found:
+        return None
+    (version, system, _), best = max(found, key=lambda rc: rc[0])
+    print(f"using {best} (file version {'.'.join(map(str, version))}, "
+          f"IVRSystem_{system:03d})", file=sys.stderr)
+    return best
+
+
+def _openvr_rank(path: Path) -> tuple:
+    """Sort key for openvr_api.dll copies: newer sorts higher.
+
+    The file version when the DLL has one; then the newest IVRSystem_NNN
+    interface it names (always present, rises with each OpenVR SDK); then
+    size as a last tie-break.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ((0, 0, 0, 0), 0, 0)
+    systems = [int(m) for m in re.findall(rb"IVRSystem_(\d{3})", data)]
+    return (pe_file_version(path), max(systems, default=0), len(data))
 
 
 def pe_is_x64(path: Path) -> bool:
