@@ -359,15 +359,35 @@ void hook_register(const char *name, void *hook, void **real)
 /* Functions the game resolves at run time (delay-load, or LoadLibrary +
  * GetProcAddress) never appear in an import table, so hand out our hooks
  * here too. Only system DLLs' exports are swapped. */
+/* Stand-in for LibOVR entry points the shim doesn't implement. Newer SDKs'
+ * loaders resolve their whole function list and reject the runtime if any
+ * is missing, though games only call most of them when the feature exists.
+ * Nearly all of these return ovrResult, so answer ovrError_Unsupported
+ * (-1009, which is the low 32 bits the caller reads as its int result); a
+ * caller expecting void ignores it. On Win64 the caller cleans up
+ * the arguments, so ignoring them is safe. */
+static INT_PTR WINAPI unsupported_ovr_entry(void)
+{
+    static LONG calls;
+    if (InterlockedIncrement(&calls) <= 20)
+        LOG("an unimplemented ovr_* entry point was called -> ovrError_Unsupported");
+    return -1009;
+}
+
 static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
 {
     FARPROC p = real_GetProcAddress(mod, name);
     /* Meta's CAPI shim resolves every LibOVR export after loading the
-     * runtime; a single missing one makes it unload and retry forever. Log
-     * any ovr* lookup that misses so we can see which export to add. */
+     * runtime; a single missing one makes it unload and retry forever. For
+     * lookups on our own runtime, hand back the stand-in instead, and log
+     * the name so a function that matters can be implemented properly. */
     if (((ULONG_PTR)name >> 16) != 0 && !p &&
         (name[0] == 'o' || name[0] == 'O') &&
         (name[1] == 'v' || name[1] == 'V')) {
+        if (mod == g_self && !strncmp(name, "ovr_", 4)) {
+            TRACE("GetProcAddress(%s) -> not implemented, using stand-in", name);
+            return (FARPROC)unsupported_ovr_entry;
+        }
         TRACE("GetProcAddress(%s) -> MISSING", name);
     }
     if (!p || ((ULONG_PTR)name >> 16) == 0 || !is_system_module(mod))
