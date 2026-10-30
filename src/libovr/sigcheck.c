@@ -38,10 +38,6 @@ typedef CRYPT_PROVIDER_SGNR *(WINAPI *WTHelperGetProvSignerFromChain_t)(
 static WTHelperProvDataFromStateData_t real_ProvDataFromStateData;
 static WTHelperGetProvSignerFromChain_t real_GetProvSignerFromChain;
 static int g_enabled = 1;
-/* The provider state of the last genuine LibOVR file that the real
- * WinVerifyTrust reported trusted, and the provider data behind it. */
-static HANDLE g_trusted_state;
-static CRYPT_PROVIDER_DATA *g_trusted_cpd;
 
 /* True only for a file that is actually one of our stubs (carries the build
  * marker). A genuine Meta file at the same name is NOT a stub: it must go
@@ -130,26 +126,41 @@ static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
     LONG r = real_WinVerifyTrust(hwnd, action, pdata);
     /* Log the real result for a genuine LibOVR file so we can see whether
      * Wine accepted Meta's certificate (0 = trusted). */
-    if (is_libovr_named(file) && data && data->dwStateAction == WTD_STATEACTION_VERIFY) {
+    if (is_libovr_named(file) && data && data->dwStateAction == WTD_STATEACTION_VERIFY)
         LOG("real WinVerifyTrust(%ls) -> 0x%08lx%s", file, (unsigned long)r,
             r == 0 ? " (trusted)" : "");
-        g_trusted_state = r == 0 ? data->hWVTStateData : NULL;
-        g_trusted_cpd = NULL;
-    }
     return r;
 }
 
 static CRYPT_PROVIDER_DATA *WINAPI hook_ProvDataFromStateData(HANDLE h)
 {
     CRYPT_PROVIDER_DATA *cpd = real_ProvDataFromStateData(h);
-    if (cpd && h && h == g_trusted_state)
-        g_trusted_cpd = cpd;
     if (cpd)
         LOG("WTHelperProvDataFromStateData -> csSigners=%lu",
             (unsigned long)cpd->csSigners);
     else
         LOG("WTHelperProvDataFromStateData -> NULL");
     return cpd;
+}
+
+/* Is this signer's chain the genuine LibOVR runtime/platform file's, and did
+ * CryptoAPI validate it with no errors? Decided from the provider data
+ * itself rather than from a WinVerifyTrust call we saw: some loaders (Unity's
+ * OVRPlugin) reach WinVerifyTrust in a way our hook doesn't intercept. */
+static int chain_is_trusted_libovr(CRYPT_PROVIDER_DATA *cpd, CRYPT_PROVIDER_SGNR *cps)
+{
+    if (!cpd || !cps || !cps->pChainContext)
+        return 0;
+    if (!is_libovr_named(verified_file(cpd->pWintrustData)))
+        return 0;
+    /* Revocation that couldn't be checked offline doesn't make a chain
+     * untrusted (WinVerifyTrust accepts it too); anything else does. */
+    DWORD status = cps->pChainContext->TrustStatus.dwErrorStatus &
+        ~(DWORD)(CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION);
+    if (status != CERT_TRUST_NO_ERROR)
+        LOG("LibOVR signer chain has errors (status 0x%lx); leaving it as Wine "
+            "reported", (unsigned long)cps->pChainContext->TrustStatus.dwErrorStatus);
+    return status == CERT_TRUST_NO_ERROR;
 }
 
 static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DATA *cpd,
@@ -173,12 +184,12 @@ static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DA
      * rest can hold leftover heap data: the same genuine runtime that passes
      * one check then reads as a "test cert" on the next (seen as
      * fTestCert=4096 dwError=0x10 in Lost, Google Earth VR and Minecraft).
-     * For a chain the real WinVerifyTrust just reported trusted, set those
+     * For a LibOVR file whose chain CryptoAPI built with no errors, set those
      * fields to what Windows reports for that chain: not a test or
      * commercial-test cert, not revoked, no per-cert error, and self-signed
      * only where the subject is its own issuer. The certificates themselves
      * and the trust decision are Wine's, unchanged. */
-    int fix = g_enabled && cpd && cpd == g_trusted_cpd;
+    int fix = g_enabled && chain_is_trusted_libovr(cpd, cps);
     for (DWORD i = 0; i < cps->csCertChain && cps->pasCertChain; i++) {
         CRYPT_PROVIDER_CERT *pc = &cps->pasCertChain[i];
         if (fix && pc->pCert && pc->pCert->pCertInfo) {
