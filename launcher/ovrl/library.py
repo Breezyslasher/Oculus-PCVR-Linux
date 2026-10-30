@@ -176,6 +176,18 @@ def classify(token: str, app_id: str) -> dict:
 
 # --- install ---
 
+def library_name(app_id: str, token: str | None = None) -> str:
+    """The app's name from your library: the build list sometimes has none."""
+    for a in cached_library().get("apps", []):
+        if a["id"] == app_id and a.get("name"):
+            return a["name"]
+    if token:
+        for a in store.entitlements(token):
+            if a.id == app_id:
+                return a.name
+    return ""
+
+
 def _folder_name(name: str, app_id: str) -> str:
     words = re.findall(r"[A-Za-z0-9]+", name)
     return "".join(w[:1].upper() + w[1:] for w in words) or app_id
@@ -219,6 +231,7 @@ def install(app_id: str, token: str | None = None, on_progress=None,
         raise LibraryError("set real_runtime first (`ovrl setup --real-runtime "
                            "<path to genuine LibOVRRT64_1.dll>`)")
     name, builds = store.app_builds(token, app_id)
+    name = name or library_name(app_id, token)
     build = _newest_build(builds)
     if build is None:
         raise LibraryError(f"{name or app_id} has no downloadable builds")

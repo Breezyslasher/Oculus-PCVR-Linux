@@ -634,7 +634,15 @@ def cmd_download(args: argparse.Namespace) -> int:
         chosen = (live or builds)[0]
         build_id = chosen.id
         print(f"{name or args.app_id}: build {chosen.id}, version {chosen.version}")
-    dest = Path(args.dest) if args.dest else Path.cwd() / f"{args.app_id}-{build_id}"
+    if args.dest:
+        dest = Path(args.dest)
+    else:
+        # Name the folder after the game, in your games folder (as install does).
+        from . import library
+        name = name if name != args.app_id else ""
+        name = name or library.library_name(args.app_id, token)
+        dest = Path(library.load_config()["games_dir"]).expanduser() / \
+            library._folder_name(name, args.app_id)
     manifest = download_build(token, build_id, dest, workers=args.jobs)
     print(f"done: {dest}")
     launch = manifest.get("launchFile")
@@ -762,7 +770,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("download", help="download a Rift build (resumable)")
     s.add_argument("app_id")
     s.add_argument("--build-id", help="specific build (default: newest LIVE build)")
-    s.add_argument("--dest", help="target directory (default: ./<app>-<build>)")
+    s.add_argument("--dest", help="target directory (default: ~/Games/<GameName>, "
+                                  "or your games_dir setting)")
     s.add_argument("--jobs", type=int, default=8,
                    help="parallel segment downloads (default: %(default)s)")
     s.set_defaults(func=cmd_download)
