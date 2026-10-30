@@ -30,5 +30,9 @@ void *swapchain_d3d_buffer(ovrTextureSwapChain chain, int index, const void *iid
  * pixel dimensions. */
 void *swapchain_d3d_submit_texture(ovrTextureSwapChain chain);
 void swapchain_d3d_size(ovrTextureSwapChain chain, int *width, int *height);
+/* Debug aid (OVRSTUB_TEST_PATTERN=1): clear the texture about to be submitted
+ * to a solid color, so whether it shows in the headset separates "submission
+ * is broken" from "the game's rendering doesn't reach our texture". */
+void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye);
 
 #endif

@@ -1,6 +1,7 @@
 #include "vr_backend.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -266,6 +267,11 @@ bool vr_backend_begin_frame(void)
     TrackedDevicePose_t render[k_unMaxTrackedDeviceCount];
     EVRCompositorError e = g_compositor->WaitGetPoses(render, k_unMaxTrackedDeviceCount,
                                                       NULL, 0);
+    if (e != EVRCompositorError_VRCompositorError_None) {
+        static int logged;
+        if (logged++ < 5)
+            LOG("compositor WaitGetPoses failed: %d", (int)e);
+    }
     return e == EVRCompositorError_VRCompositorError_None;
 }
 
@@ -277,13 +283,41 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
     struct Texture_t tex;
     tex.handle = d3d11_texture;
     tex.eType = ETextureType_TextureType_DirectX;
-    tex.eColorSpace = EColorSpace_ColorSpace_Auto;
+    /* OVRSTUB_COLORSPACE=gamma|linear overrides Auto, for typeless or sRGB
+     * textures the compositor may otherwise misread. */
+    static int cs = -1;
+    if (cs < 0) {
+        const char *v = getenv("OVRSTUB_COLORSPACE");
+        cs = !v ? EColorSpace_ColorSpace_Auto
+           : !strcmp(v, "gamma") ? EColorSpace_ColorSpace_Gamma
+           : !strcmp(v, "linear") ? EColorSpace_ColorSpace_Linear
+           : EColorSpace_ColorSpace_Auto;
+    }
+    tex.eColorSpace = (EColorSpace)cs;
     struct VRTextureBounds_t bounds = {uMin, vMin, uMax, vMax};
     EVRCompositorError e = g_compositor->Submit((EVREye)eye, &tex, &bounds,
                                                 EVRSubmitFlags_Submit_Default);
     if (e != EVRCompositorError_VRCompositorError_None)
         LOG("compositor Submit(eye %d) failed: %d", (int)eye, (int)e);
     return e == EVRCompositorError_VRCompositorError_None;
+}
+
+void vr_backend_log_compositor_state(long frame)
+{
+    if (!g_active)
+        return;
+    struct Compositor_FrameTiming t;
+    memset(&t, 0, sizeof(t));
+    t.m_nSize = sizeof(t);
+    bool have = g_compositor->GetFrameTiming && g_compositor->GetFrameTiming(&t, 0);
+    LOG("frame %ld: compositor CanRenderScene=%d sceneFocusPid=%u lastRendererPid=%u "
+        "(our win pid %lu)%s presents=%u dropped=%u mispresented=%u",
+        frame, g_compositor->CanRenderScene ? (int)g_compositor->CanRenderScene() : -1,
+        g_compositor->GetCurrentSceneFocusProcess
+            ? g_compositor->GetCurrentSceneFocusProcess() : 0,
+        g_compositor->GetLastFrameRenderer ? g_compositor->GetLastFrameRenderer() : 0,
+        (unsigned long)GetCurrentProcessId(), have ? "" : " (no timing)",
+        t.m_nNumFramePresents, t.m_nNumDroppedFrames, t.m_nNumMisPresented);
 }
 
 void vr_backend_present(void)

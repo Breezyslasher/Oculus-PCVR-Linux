@@ -53,5 +53,7 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
                            float uMin, float vMin, float uMax, float vMax);
 
 void vr_backend_present(void);
+/* Log what the compositor thinks of us (scene focus, presents, drops). */
+void vr_backend_log_compositor_state(long frame);
 
 #endif

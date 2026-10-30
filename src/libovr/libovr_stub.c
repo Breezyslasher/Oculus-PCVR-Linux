@@ -741,6 +741,16 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 ? l->ColorTexture[eye] : l->ColorTexture[0];
             if (!chain)
                 continue;
+            static int test_pattern = -1;
+            if (test_pattern < 0) {
+                const char *tp = getenv("OVRSTUB_TEST_PATTERN");
+                test_pattern = tp && *tp == '1';
+                if (test_pattern)
+                    LOG("OVRSTUB_TEST_PATTERN: submitting solid colors "
+                        "(magenta left, cyan right) instead of the game's image");
+            }
+            if (test_pattern)
+                swapchain_d3d_fill_test_pattern(chain, eye);
             void *tex = swapchain_d3d_submit_texture(chain);
             int w, h2;
             swapchain_d3d_size(chain, &w, &h2);
@@ -763,6 +773,8 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
     LONG f = InterlockedIncrement(&frames_);
     if (f <= 3 || f % 900 == 0)
         LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
+    if (f == 1 || f == 90 || f % 900 == 0)
+        vr_backend_log_compositor_state(f);
     return submitted ? ovrSuccess
         : set_error(ovrSuccess_NotVisible, "no eye layer submitted");
 }
