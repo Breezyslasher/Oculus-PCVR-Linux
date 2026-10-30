@@ -1531,6 +1531,36 @@ static void log_wine_version(void)
         LOG("not running on Wine");
 }
 
+/* Unity's newer Oculus XR plugin decides whether Oculus is installed from
+ * HKLM\SOFTWARE\Oculus VR, LLC\Oculus and never starts VR without it (seen
+ * with a Unity 2019+ game: one RegOpenKeyExW -> not found, then nothing).
+ * `ovrl prefix-setup` writes the key, but a prefix Steam made for the game
+ * has none, so add it when missing, in both registry views, with Base
+ * pointing at the folder this shim is in. An existing key is left alone. */
+static void ensure_oculus_registry(HINSTANCE self)
+{
+    wchar_t base[MAX_PATH];
+    DWORD n = GetModuleFileNameW(self, base, MAX_PATH);
+    while (n > 0 && base[n - 1] != L'\\' && base[n - 1] != L'/')
+        n--;
+    base[n] = 0;
+    static const REGSAM views[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+    for (int i = 0; i < 2; i++) {
+        HKEY k;
+        DWORD disp = 0;
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oculus VR, LLC\\Oculus", 0,
+                            NULL, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | views[i], NULL,
+                            &k, &disp) != ERROR_SUCCESS)
+            continue;
+        if (disp == REG_CREATED_NEW_KEY &&
+            RegSetValueExW(k, L"Base", 0, REG_SZ, (const BYTE *)base,
+                           (DWORD)((wcslen(base) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS)
+            LOG("registered HKLM\\SOFTWARE\\Oculus VR, LLC\\Oculus (%s view), Base = %ls",
+                i ? "32-bit" : "64-bit", base);
+        RegCloseKey(k);
+    }
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1541,6 +1571,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         log_wine_version();
         log_ovrstub_env();
         create_hmd_connected_event();
+        ensure_oculus_registry(inst);
         sigcheck_install();
         redirect_install(inst);
     }
