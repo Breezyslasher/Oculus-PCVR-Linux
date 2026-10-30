@@ -19,9 +19,11 @@
  */
 #include <stdlib.h>
 #include <windows.h>
+#include <wincrypt.h>
 #include <wintrust.h>
 
 #include "../common/log.h"
+#include "digicert_root_der.h"
 #include "iat_hook.h"
 #include "sigcheck.h"
 
@@ -169,8 +171,37 @@ static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DA
     return cps;
 }
 
+/* Ensure the DigiCert Assured ID Root CA is in the prefix's trusted-root
+ * store. Proton prefixes often lack it, so Wine builds the genuine Meta
+ * runtime's chain with an untrusted root (CERT_E_UNTRUSTEDROOT) and the
+ * game's own check refuses to load the runtime. Adding this standard public
+ * root -- the same one every real Windows install trusts -- lets the real
+ * signature validate. Set OVRSTUB_INSTALL_ROOT_CA=0 to skip. */
+static void install_trusted_root(void)
+{
+    const char *skip = getenv("OVRSTUB_INSTALL_ROOT_CA");
+    if (skip && skip[0] == '0')
+        return;
+    HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE, L"ROOT");
+    if (!store) {
+        LOG("could not open LOCAL_MACHINE Root store (error %lu); the real "
+            "runtime's root CA may read as untrusted", GetLastError());
+        return;
+    }
+    if (CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING,
+            digicert_assured_id_root_ca, sizeof(digicert_assured_id_root_ca),
+            CERT_STORE_ADD_REPLACE_EXISTING, NULL))
+        LOG("DigiCert Assured ID Root CA present in the prefix Root store");
+    else
+        LOG("failed to add DigiCert root to the Root store (error %lu)",
+            GetLastError());
+    CertCloseStore(store, 0);
+}
+
 void sigcheck_install(void)
 {
+    install_trusted_root();
     const char *v = getenv("OVRSTUB_FAKE_SIGNATURE");
     if (v && v[0] == '0') {
         g_enabled = 0;
