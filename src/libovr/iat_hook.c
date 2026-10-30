@@ -391,6 +391,155 @@ static INT_PTR WINAPI empty_platform_entry(void)
     return 0;
 }
 
+/* Named stand-ins. Each missing function a game looks up gets its own slot,
+ * so the log can say which one it called, and how often: a game polling one
+ * of them in a loop (waiting for an answer that never comes) shows up as a
+ * climbing count. After STANDIN_SLOTS distinct names, later ones share the
+ * anonymous stand-ins above. */
+#define STANDIN_SLOTS 96
+static struct {
+    char name[64];
+    INT_PTR result;
+    volatile LONG calls;
+} g_standin[STANDIN_SLOTS];
+static volatile LONG g_standin_used;
+
+static INT_PTR standin_hit(int i)
+{
+    LONG n = InterlockedIncrement(&g_standin[i].calls);
+    if (n <= 3 || (n & (n - 1)) == 0)   /* 1, 2, 3, then each power of two */
+        LOG("unimplemented %s called (%ld time%s) -> %ld", g_standin[i].name, n,
+            n == 1 ? "" : "s", (long)g_standin[i].result);
+    return g_standin[i].result;
+}
+
+static INT_PTR WINAPI standin_0(void) { return standin_hit(0); }
+static INT_PTR WINAPI standin_1(void) { return standin_hit(1); }
+static INT_PTR WINAPI standin_2(void) { return standin_hit(2); }
+static INT_PTR WINAPI standin_3(void) { return standin_hit(3); }
+static INT_PTR WINAPI standin_4(void) { return standin_hit(4); }
+static INT_PTR WINAPI standin_5(void) { return standin_hit(5); }
+static INT_PTR WINAPI standin_6(void) { return standin_hit(6); }
+static INT_PTR WINAPI standin_7(void) { return standin_hit(7); }
+static INT_PTR WINAPI standin_8(void) { return standin_hit(8); }
+static INT_PTR WINAPI standin_9(void) { return standin_hit(9); }
+static INT_PTR WINAPI standin_10(void) { return standin_hit(10); }
+static INT_PTR WINAPI standin_11(void) { return standin_hit(11); }
+static INT_PTR WINAPI standin_12(void) { return standin_hit(12); }
+static INT_PTR WINAPI standin_13(void) { return standin_hit(13); }
+static INT_PTR WINAPI standin_14(void) { return standin_hit(14); }
+static INT_PTR WINAPI standin_15(void) { return standin_hit(15); }
+static INT_PTR WINAPI standin_16(void) { return standin_hit(16); }
+static INT_PTR WINAPI standin_17(void) { return standin_hit(17); }
+static INT_PTR WINAPI standin_18(void) { return standin_hit(18); }
+static INT_PTR WINAPI standin_19(void) { return standin_hit(19); }
+static INT_PTR WINAPI standin_20(void) { return standin_hit(20); }
+static INT_PTR WINAPI standin_21(void) { return standin_hit(21); }
+static INT_PTR WINAPI standin_22(void) { return standin_hit(22); }
+static INT_PTR WINAPI standin_23(void) { return standin_hit(23); }
+static INT_PTR WINAPI standin_24(void) { return standin_hit(24); }
+static INT_PTR WINAPI standin_25(void) { return standin_hit(25); }
+static INT_PTR WINAPI standin_26(void) { return standin_hit(26); }
+static INT_PTR WINAPI standin_27(void) { return standin_hit(27); }
+static INT_PTR WINAPI standin_28(void) { return standin_hit(28); }
+static INT_PTR WINAPI standin_29(void) { return standin_hit(29); }
+static INT_PTR WINAPI standin_30(void) { return standin_hit(30); }
+static INT_PTR WINAPI standin_31(void) { return standin_hit(31); }
+static INT_PTR WINAPI standin_32(void) { return standin_hit(32); }
+static INT_PTR WINAPI standin_33(void) { return standin_hit(33); }
+static INT_PTR WINAPI standin_34(void) { return standin_hit(34); }
+static INT_PTR WINAPI standin_35(void) { return standin_hit(35); }
+static INT_PTR WINAPI standin_36(void) { return standin_hit(36); }
+static INT_PTR WINAPI standin_37(void) { return standin_hit(37); }
+static INT_PTR WINAPI standin_38(void) { return standin_hit(38); }
+static INT_PTR WINAPI standin_39(void) { return standin_hit(39); }
+static INT_PTR WINAPI standin_40(void) { return standin_hit(40); }
+static INT_PTR WINAPI standin_41(void) { return standin_hit(41); }
+static INT_PTR WINAPI standin_42(void) { return standin_hit(42); }
+static INT_PTR WINAPI standin_43(void) { return standin_hit(43); }
+static INT_PTR WINAPI standin_44(void) { return standin_hit(44); }
+static INT_PTR WINAPI standin_45(void) { return standin_hit(45); }
+static INT_PTR WINAPI standin_46(void) { return standin_hit(46); }
+static INT_PTR WINAPI standin_47(void) { return standin_hit(47); }
+static INT_PTR WINAPI standin_48(void) { return standin_hit(48); }
+static INT_PTR WINAPI standin_49(void) { return standin_hit(49); }
+static INT_PTR WINAPI standin_50(void) { return standin_hit(50); }
+static INT_PTR WINAPI standin_51(void) { return standin_hit(51); }
+static INT_PTR WINAPI standin_52(void) { return standin_hit(52); }
+static INT_PTR WINAPI standin_53(void) { return standin_hit(53); }
+static INT_PTR WINAPI standin_54(void) { return standin_hit(54); }
+static INT_PTR WINAPI standin_55(void) { return standin_hit(55); }
+static INT_PTR WINAPI standin_56(void) { return standin_hit(56); }
+static INT_PTR WINAPI standin_57(void) { return standin_hit(57); }
+static INT_PTR WINAPI standin_58(void) { return standin_hit(58); }
+static INT_PTR WINAPI standin_59(void) { return standin_hit(59); }
+static INT_PTR WINAPI standin_60(void) { return standin_hit(60); }
+static INT_PTR WINAPI standin_61(void) { return standin_hit(61); }
+static INT_PTR WINAPI standin_62(void) { return standin_hit(62); }
+static INT_PTR WINAPI standin_63(void) { return standin_hit(63); }
+static INT_PTR WINAPI standin_64(void) { return standin_hit(64); }
+static INT_PTR WINAPI standin_65(void) { return standin_hit(65); }
+static INT_PTR WINAPI standin_66(void) { return standin_hit(66); }
+static INT_PTR WINAPI standin_67(void) { return standin_hit(67); }
+static INT_PTR WINAPI standin_68(void) { return standin_hit(68); }
+static INT_PTR WINAPI standin_69(void) { return standin_hit(69); }
+static INT_PTR WINAPI standin_70(void) { return standin_hit(70); }
+static INT_PTR WINAPI standin_71(void) { return standin_hit(71); }
+static INT_PTR WINAPI standin_72(void) { return standin_hit(72); }
+static INT_PTR WINAPI standin_73(void) { return standin_hit(73); }
+static INT_PTR WINAPI standin_74(void) { return standin_hit(74); }
+static INT_PTR WINAPI standin_75(void) { return standin_hit(75); }
+static INT_PTR WINAPI standin_76(void) { return standin_hit(76); }
+static INT_PTR WINAPI standin_77(void) { return standin_hit(77); }
+static INT_PTR WINAPI standin_78(void) { return standin_hit(78); }
+static INT_PTR WINAPI standin_79(void) { return standin_hit(79); }
+static INT_PTR WINAPI standin_80(void) { return standin_hit(80); }
+static INT_PTR WINAPI standin_81(void) { return standin_hit(81); }
+static INT_PTR WINAPI standin_82(void) { return standin_hit(82); }
+static INT_PTR WINAPI standin_83(void) { return standin_hit(83); }
+static INT_PTR WINAPI standin_84(void) { return standin_hit(84); }
+static INT_PTR WINAPI standin_85(void) { return standin_hit(85); }
+static INT_PTR WINAPI standin_86(void) { return standin_hit(86); }
+static INT_PTR WINAPI standin_87(void) { return standin_hit(87); }
+static INT_PTR WINAPI standin_88(void) { return standin_hit(88); }
+static INT_PTR WINAPI standin_89(void) { return standin_hit(89); }
+static INT_PTR WINAPI standin_90(void) { return standin_hit(90); }
+static INT_PTR WINAPI standin_91(void) { return standin_hit(91); }
+static INT_PTR WINAPI standin_92(void) { return standin_hit(92); }
+static INT_PTR WINAPI standin_93(void) { return standin_hit(93); }
+static INT_PTR WINAPI standin_94(void) { return standin_hit(94); }
+static INT_PTR WINAPI standin_95(void) { return standin_hit(95); }
+static INT_PTR (WINAPI *const g_standin_fn[STANDIN_SLOTS])(void) = {
+    standin_0, standin_1, standin_2, standin_3, standin_4, standin_5, standin_6, standin_7,
+    standin_8, standin_9, standin_10, standin_11, standin_12, standin_13, standin_14, standin_15,
+    standin_16, standin_17, standin_18, standin_19, standin_20, standin_21, standin_22, standin_23,
+    standin_24, standin_25, standin_26, standin_27, standin_28, standin_29, standin_30, standin_31,
+    standin_32, standin_33, standin_34, standin_35, standin_36, standin_37, standin_38, standin_39,
+    standin_40, standin_41, standin_42, standin_43, standin_44, standin_45, standin_46, standin_47,
+    standin_48, standin_49, standin_50, standin_51, standin_52, standin_53, standin_54, standin_55,
+    standin_56, standin_57, standin_58, standin_59, standin_60, standin_61, standin_62, standin_63,
+    standin_64, standin_65, standin_66, standin_67, standin_68, standin_69, standin_70, standin_71,
+    standin_72, standin_73, standin_74, standin_75, standin_76, standin_77, standin_78, standin_79,
+    standin_80, standin_81, standin_82, standin_83, standin_84, standin_85, standin_86, standin_87,
+    standin_88, standin_89, standin_90, standin_91, standin_92, standin_93, standin_94, standin_95,
+};
+
+/* A stand-in for `name` returning `result`, reusing its slot if the name
+ * was looked up before; the anonymous one once the slots are used up. */
+static FARPROC standin_for(const char *name, INT_PTR result, FARPROC anonymous)
+{
+    LONG used = g_standin_used;
+    for (LONG i = 0; i < used && i < STANDIN_SLOTS; i++)
+        if (!strcmp(g_standin[i].name, name) && g_standin[i].result == result)
+            return (FARPROC)g_standin_fn[i];
+    LONG i = InterlockedIncrement(&g_standin_used) - 1;
+    if (i >= STANDIN_SLOTS)
+        return anonymous;
+    lstrcpynA(g_standin[i].name, name, sizeof(g_standin[i].name));
+    g_standin[i].result = result;
+    return (FARPROC)g_standin_fn[i];
+}
+
 static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
 {
     FARPROC p = real_GetProcAddress(mod, name);
@@ -403,7 +552,7 @@ static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
         (name[1] == 'v' || name[1] == 'V')) {
         if (mod == g_self && !strncmp(name, "ovr_", 4)) {
             TRACE("GetProcAddress(%s) -> not implemented, using stand-in", name);
-            return (FARPROC)unsupported_ovr_entry;
+            return standin_for(name, -1009, (FARPROC)unsupported_ovr_entry);
         }
         /* Same for our Platform SDK stub (it carries our build marker).
          * Platform functions return handles, strings, counts and flags, so
@@ -414,7 +563,7 @@ static FARPROC WINAPI hook_GetProcAddress(HMODULE mod, LPCSTR name)
             real_GetProcAddress(mod, "ovrstub_build_marker")) {
             TRACE("GetProcAddress(%s) -> not in the Platform stub, using empty stand-in",
                   name);
-            return (FARPROC)empty_platform_entry;
+            return standin_for(name, 0, (FARPROC)empty_platform_entry);
         }
         TRACE("GetProcAddress(%s) -> MISSING", name);
     }
