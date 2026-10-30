@@ -195,19 +195,21 @@ game through SteamVR. Undo with `ovrl stubs restore "$(dirname "$GAME")"`.
 
 ## Easy mode: library UI and one-step install
 
-Once you're logged in (`python3 -m ovrl login`, see above) and have built the
-DLLs (`make`), save your settings once:
+Get the code and build it once (needs `git`, `make` and MinGW, see Build):
 
 ```sh
-cd launcher
-python3 -m ovrl setup --real-runtime /path/to/real/LibOVRRT64_1.dll --games-dir ~/Games
+git clone -b claude/new-session-wtlzfc https://github.com/Breezyslasher/Oculus-PCVR-Linux.git ~/Oculus-PCVR-Linux
+cd ~/Oculus-PCVR-Linux && make
+cd launcher && python3 -m ovrl gui
 ```
 
-Then open the library page in your browser:
-
-```sh
-python3 -m ovrl gui
-```
+Everything else happens in the page that opens: paste your access token
+(step 1 above) to log in, set the genuine `LibOVRRT64_1.dll` and your games
+folder in Settings (**Browse…** opens your file dialog), and press **Add to
+app menu** so next time you can start it from your desktop's menu with no
+terminal. **Get latest version & update all games** pulls the newest code,
+rebuilds it and copies the new shim into every installed game. **Quit**
+stops it.
 
 It lists the apps you own and checks each one's newest build, marking it **PC**
 (a Windows .exe), **Quest** (an Android APK) or **not a game**. Quest and Rift
@@ -215,9 +217,9 @@ versions of a game have separate IDs, and only PC games get an Install button.
 Install downloads the game into `games_dir`, detects Unreal or Unity, stages
 the shim beside the exe and adds it to Steam with Proton forced. If Steam is
 running, the game is queued; quit Steam and press **Add queued games to
-Steam**. **Update shim in all games** copies the freshly built shim, injector
-and Platform stub into every installed game (Meta's genuine DLLs are left
-alone). **Browse…** opens your desktop's file dialog (zenity or kdialog).
+Steam**. **Re-copy shim into all games** copies the built shim, injector and
+Platform stub into every installed game again (Meta's genuine DLLs are left
+alone). **Browse…** needs zenity or kdialog.
 
 The page is served only on 127.0.0.1, and actions need a random per-run token
 embedded in the page.

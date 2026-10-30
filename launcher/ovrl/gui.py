@@ -18,6 +18,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import cli, library, store
@@ -29,6 +30,8 @@ class State:
         self.jobs: dict[str, dict] = {}     # app_id -> install job
         self.log: list[str] = []
         self.busy: str | None = None        # what the single worker is doing
+        self.user: str | None = None
+        self.server = None
         self.installs = ThreadPoolExecutor(max_workers=1)   # one download at a time
         self.misc = ThreadPoolExecutor(max_workers=1)
         self.checks = ThreadPoolExecutor(max_workers=4)
@@ -109,6 +112,10 @@ def state() -> dict:
         "config_keys": library.CONFIG_KEYS,
         "pick": PICK,
         "logged_in": (store.config_dir() / "token").is_file(),
+        "user": S.user,
+        "has_git": (cli.REPO_ROOT / ".git").is_dir(),
+        "has_desktop": (Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+                        / "applications/ovrl.desktop").is_file(),
     }
 
 
@@ -140,7 +147,69 @@ def pick_path(kind: str, start: str, title: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def _login(raw: str) -> None:
+    token = store.clean_token(raw)
+    problem = store.token_problem(token)
+    if problem:
+        raise library.LibraryError(f"that doesn't look like a user token: {problem}")
+    user = store.current_user(token)    # checks it with Meta before saving
+    store.save_token(token)
+    S.user = user.get("alias") or user.get("display_name") or user.get("id")
+    S.say(f"logged in as {S.user}")
+
+
+def _shell(cmd: list[str]) -> None:
+    S.say("$ " + " ".join(cmd))
+    proc = subprocess.Popen(cmd, cwd=cli.REPO_ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        S.say(line.rstrip())
+    if proc.wait():
+        raise library.LibraryError(f"{cmd[0]} failed (exit {proc.returncode}); see the log")
+
+
+def _update_from_github() -> None:
+    """git pull + make, then push the new shim into every installed game."""
+    if not (cli.REPO_ROOT / ".git").is_dir():
+        raise library.LibraryError(f"{cli.REPO_ROOT} is not a git checkout")
+    before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cli.REPO_ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    _shell(["git", "pull", "--ff-only"])
+    _shell(["make"])
+    library.update_shims(log=S.say)
+    after = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cli.REPO_ROOT,
+                           capture_output=True, text=True).stdout.strip()
+    if before != after:
+        S.say("updated; press Quit and reopen ovrl to load the new version of this page")
+
+
+def desktop_entry() -> Path:
+    """Add "Oculus PC games" to the desktop's app menu (no terminal needed)."""
+    path = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") \
+        / "applications" / "ovrl.desktop"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "[Desktop Entry]\nType=Application\nName=Oculus PC games (ovrl)\n"
+        "Comment=Install your Oculus PC games and add them to Steam\n"
+        f"Path={cli.REPO_ROOT / 'launcher'}\nExec=python3 -m ovrl gui\n"
+        "Icon=applications-games\nTerminal=false\nCategories=Game;\n")
+    return path
+
+
 def _post(path: str, body: dict) -> dict:
+    if path == "/api/login":
+        _login(str(body.get("token", "")))
+        return {"ok": True}
+    if path == "/api/update":
+        _run("updating from GitHub", _update_from_github)
+        return {"ok": True}
+    if path == "/api/desktop":
+        S.say(f"added to your app menu: {desktop_entry()}")
+        return {"ok": True}
+    if path == "/api/quit":
+        S.say("quitting")
+        threading.Thread(target=S.server.shutdown, daemon=True).start()
+        return {"ok": True}
     if path == "/api/pick":
         key = str(body.get("key", ""))
         if key not in PICK:
@@ -186,7 +255,7 @@ h1{font-size:20px;margin:4px 0 12px} h2{font-size:15px;margin:0 0 8px}
 button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
 button.sec{background:transparent;color:var(--acc);border:1px solid var(--line)}
 button:disabled{opacity:.45;cursor:default}
-input[type=text]{flex:1;min-width:160px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+input[type=text],input[type=password]{flex:1;min-width:160px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
 table{width:100%;border-collapse:collapse} td{padding:7px 6px;border-top:1px solid var(--line);vertical-align:middle}
 .badge{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid currentColor;white-space:nowrap}
 .pc{color:var(--ok)} .quest{color:var(--mute)} .other{color:var(--mute)} .unk{color:var(--warn)}
@@ -195,8 +264,15 @@ progress{width:140px} pre{max-height:220px;overflow:auto;font-size:12px;margin:0
 .cfg{display:grid;grid-template-columns:150px 1fr;gap:6px 10px;align-items:center}
 @media (max-width:600px){.cfg{grid-template-columns:1fr}}
 </style></head><body><main>
-<h1>Oculus PC games &rarr; Steam</h1>
+<div class="bar" style="justify-content:space-between"><h1>Oculus PC games &rarr; Steam</h1>
+<div class="bar"><button class="sec" id="desk" onclick="post('/api/desktop')">Add to app menu</button>
+<button class="sec" onclick="if(confirm('Stop ovrl? Downloads in progress will stop (they resume next time).'))post('/api/quit').then(()=>document.body.innerHTML='<main><h1>ovrl stopped</h1><p>Open it again from your app menu.</p></main>')">Quit</button></div></div>
 <div class="card" id="status"></div>
+<div class="card" id="login" hidden><h2>Log in to your Meta account</h2>
+<p class="mute">Paste your access token (it starts with FRL or OC). It is checked with Meta, then saved only on this computer, readable only by you. Treat it like a password: paste it here and nowhere else.
+How to get it: see <a href="https://github.com/Breezyslasher/Oculus-PCVR-Linux#download-a-game-you-own-milestone-1" target="_blank" rel="noreferrer">step 1 in the README</a>.</p>
+<div class="bar"><input type="password" id="tok" placeholder="Access token" autocomplete="off">
+<button onclick="post('/api/login',{token:document.getElementById('tok').value}).then(j=>{if(j.ok){document.getElementById('tok').value='';post('/api/refresh')}})">Log in</button></div></div>
 <div class="card"><div class="bar" style="margin-bottom:8px">
 <input type="text" id="q" placeholder="Search your library">
 <label><input type="checkbox" id="pconly" checked> PC games only</label>
@@ -206,8 +282,9 @@ progress{width:140px} pre{max-height:220px;overflow:auto;font-size:12px;margin:0
 <div class="card"><h2>Installed games</h2><table id="games"></table>
 <div class="bar" style="margin-top:10px">
 <button id="addq" onclick="post('/api/add-to-steam')">Add queued games to Steam</button>
-<button class="sec" onclick="post('/api/update-shims')">Update shim in all games</button></div>
-<p class="mute">Update copies the newly built shim (rebuild first with <code>git pull &amp;&amp; make</code>) into every installed game. Meta's genuine DLLs are left alone.</p></div>
+<button class="sec" id="upd" onclick="post('/api/update')">Get latest version &amp; update all games</button>
+<button class="sec" onclick="post('/api/update-shims')">Re-copy shim into all games</button></div>
+<p class="mute">“Get latest version” downloads the newest ovrl code from GitHub, rebuilds it, and copies the new shim into every installed game. Meta's genuine DLLs are left alone.</p></div>
 <div class="card"><h2>Settings</h2><p class="mute">games_dir is where downloads go. Browse opens your desktop&rsquo;s file dialog; remember to Save.</p><div class="cfg" id="cfg"></div>
 <div class="bar" style="margin-top:10px"><button onclick="saveCfg()">Save settings</button></div></div>
 <div class="card"><h2>Log</h2><pre id="log"></pre></div>
@@ -223,7 +300,7 @@ function badge(a){if(!a.kind)return '<span class="badge unk">checking…</span>'
  return `<span class="badge ${a.kind}" title="${esc(a.reason)}">${a.kind=="quest"?"Quest":"not a game"}</span>`}
 function draw(){const s=st;
  document.getElementById("status").innerHTML=`<div class="bar">
- ${s.logged_in?"":'<span class="err">Not logged in: run <code>python3 -m ovrl login</code></span>'}
+ ${s.logged_in?(s.user?`<span>Logged in as <b>${esc(s.user)}</b> <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`:`<span>Logged in <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`):'<span class="err">Not logged in: paste your token below.</span>'}
  ${s.config.real_runtime?"":'<span class="err">Set the genuine LibOVRRT64_1.dll path in Settings below.</span>'}
  <span>Steam: ${s.steam_running?'<b class="unk">running</b> (games get queued; quit Steam to add them)':'<b class="pc">closed</b>'}</span>
  ${s.queued.length?`<span>Queued for Steam: ${esc(s.queued.join(", "))}</span>`:""}
@@ -240,6 +317,9 @@ function draw(){const s=st;
  const gs=Object.values(s.installed);
  document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div></td><td>${g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
  document.getElementById("addq").disabled=!s.queued.length||s.steam_running;
+ if(!s.logged_in)document.getElementById("login").hidden=false;
+ document.getElementById("upd").disabled=!s.has_git||!!s.busy;
+ document.getElementById("desk").hidden=s.has_desktop;
  document.getElementById("log").textContent=s.log.join("\n");
  if(!cfgDrawn){cfgDrawn=true;document.getElementById("cfg").innerHTML=Object.entries(s.config_keys).map(([k,h])=>
   `<label for="c_${k}">${k}</label><div><div class="bar"><input type="text" id="c_${k}" value="${esc(s.config[k])}">${s.pick[k]?`<button class="sec" onclick="browse('${k}')">Browse…</button>`:""}</div><div class="mute">${esc(h)}</div></div>`).join("")}}
@@ -291,8 +371,16 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
             except (library.LibraryError, store.StoreError, ValueError) as e:
                 self._send(200, json.dumps({"error": str(e)}).encode())
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError:
+        # Already running (e.g. opened twice from the app menu): show that one.
+        print(f"ovrl UI already running at {url}")
+        if open_browser:
+            webbrowser.open(url)
+        return
+    S.server = server
     print(f"ovrl UI at {url}  (Ctrl+C to stop)")
     if library.cached_library().get("apps"):
         _check_unknown()
