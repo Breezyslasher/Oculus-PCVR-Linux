@@ -193,6 +193,122 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
     return s;
 }
 
+/* Exports some SDK versions require in their symbol table (Meta's loader
+ * unloads the runtime if any is missing). Minimal, safe behavior. */
+
+EXPORT ovrResult ovr_Lookup(const char *name, void **data)
+{
+    LOG("ovr_Lookup(%s)", name ? name : "(null)");
+    if (data)
+        *data = NULL;
+    return ovrError_Unsupported;
+}
+
+EXPORT unsigned ovr_GetEnabledCaps(ovrSession session)
+{
+    (void)session;
+    return 0;
+}
+
+EXPORT void ovr_SetEnabledCaps(ovrSession session, unsigned caps)
+{
+    (void)session; (void)caps;
+}
+
+EXPORT unsigned ovr_GetTrackingCaps(ovrSession session)
+{
+    (void)session;
+    return 0;
+}
+
+EXPORT ovrTrackingState ovr_GetTrackingStateWithSensorData(ovrSession session,
+                                                           double absTime,
+                                                           ovrBool latencyMarker,
+                                                           ovrSensorData *sensor)
+{
+    if (sensor)
+        memset(sensor, 0, sizeof(*sensor));
+    return ovr_GetTrackingState(session, absTime, latencyMarker);
+}
+
+EXPORT ovrResult ovr_GetExternalCameras(ovrSession session, void *cameras,
+                                        unsigned *inoutCameraCount)
+{
+    (void)session; (void)cameras;
+    if (inoutCameraCount)
+        *inoutCameraCount = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SetExternalCameraProperties(ovrSession session, const char *name,
+                                                 const void *intrinsics,
+                                                 const void *extrinsics)
+{
+    (void)session; (void)name; (void)intrinsics; (void)extrinsics;
+    return ovrSuccess;
+}
+
+/* Audio device queries: report the system default (WAVE_MAPPER / empty). */
+EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(ovrSession session, unsigned *deviceOutId)
+{
+    (void)session;
+    if (deviceOutId)
+        *deviceOutId = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInWaveId(ovrSession session, unsigned *deviceInId)
+{
+    (void)session;
+    if (deviceInId)
+        *deviceInId = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(ovrSession session, wchar_t *buffer)
+{
+    (void)session;
+    if (buffer)
+        buffer[0] = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(ovrSession session, wchar_t *buffer)
+{
+    (void)session;
+    if (buffer)
+        buffer[0] = 0;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceOutGuid(ovrSession session, GUID *guid)
+{
+    (void)session;
+    if (guid)
+        memset(guid, 0, sizeof(*guid));
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetAudioDeviceInGuid(ovrSession session, GUID *guid)
+{
+    (void)session;
+    if (guid)
+        memset(guid, 0, sizeof(*guid));
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SetSynchronizationQueueVk(ovrSession session, void *queue)
+{
+    (void)session; (void)queue;
+    return ovrSuccess;
+}
+
+/* Misspelled variant that shipped in some SDK versions. */
+EXPORT ovrResult ovr_SetSynchonizationQueueVk(ovrSession session, void *queue)
+{
+    return ovr_SetSynchronizationQueueVk(session, queue);
+}
+
 EXPORT ovrTouchHapticsDesc ovr_GetTouchHapticsDesc(ovrSession session, int type)
 {
     ovrTouchHapticsDesc d;

@@ -158,6 +158,14 @@ typedef struct {
     int SubmitOptimalSamples;
 } ovrTouchHapticsDesc;
 
+typedef struct {
+    ovrVector3f Accelerometer;
+    ovrVector3f Gyro;
+    ovrVector3f Magnetometer;
+    float Temperature;
+    float TimeInSeconds;
+} ovrSensorData;
+
 /* ---- Texture swap chains, layers and submission (Milestone 3b) ---------- */
 
 typedef int ovrTextureType;   /* ovrTexture_2D = 0 is all we handle */
