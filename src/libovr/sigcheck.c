@@ -87,6 +87,18 @@ static LPCWSTR verified_file(WINTRUST_DATA *data)
     return NULL;
 }
 
+static int is_libovr_named(LPCWSTR path)
+{
+    if (!path)
+        return 0;
+    LPCWSTR base = path;
+    for (LPCWSTR p = path; *p; p++)
+        if (*p == L'\\' || *p == L'/')
+            base = p + 1;
+    return _wcsnicmp(base, L"LibOVRRT64_1", 12) == 0 ||
+           _wcsnicmp(base, L"LibOVRPlatform64_1", 18) == 0;
+}
+
 static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
 {
     WINTRUST_DATA *data = pdata;
@@ -102,7 +114,13 @@ static LONG WINAPI hook_WinVerifyTrust(HWND hwnd, GUID *action, LPVOID pdata)
          * answer CLOSE (and every other state action) with success too. */
         return ERROR_SUCCESS;
     }
-    return real_WinVerifyTrust(hwnd, action, pdata);
+    LONG r = real_WinVerifyTrust(hwnd, action, pdata);
+    /* Log the real result for a genuine LibOVR file so we can see whether
+     * Wine accepted Meta's certificate (0 = trusted). */
+    if (is_libovr_named(file) && data && data->dwStateAction == WTD_STATEACTION_VERIFY)
+        LOG("real WinVerifyTrust(%ls) -> 0x%08lx%s", file, (unsigned long)r,
+            r == 0 ? " (trusted)" : "");
+    return r;
 }
 
 void sigcheck_install(void)
