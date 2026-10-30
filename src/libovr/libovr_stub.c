@@ -38,9 +38,18 @@ static struct ovrHmdStruct g_hmd;
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
 /* Log the first call of each entry point, so when a game crashes the last
  * line in the log names the call it was in (or the one just before). */
+/* Every export counts its call and records its name, so the stall watchdog
+ * (below) can tell whether the game is still calling us and what it called
+ * last when frames stop. */
+static volatile LONG g_api_calls;
+static const char *volatile g_last_api;
+static void start_stall_watchdog(void);
+
 #define TRACE_FIRST()                                        \
     do {                                                     \
         static LONG once_;                                   \
+        InterlockedIncrement(&g_api_calls);                  \
+        g_last_api = __func__;                               \
         if (!InterlockedExchange(&once_, 1))                 \
             LOG("-> %s", __func__);                          \
     } while (0)
@@ -226,6 +235,7 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
     if (session)
         *session = &g_hmd;
     LOG("ovr_Create -> session via OpenVR");
+    start_stall_watchdog();
     return ovrSuccess;
 }
 
@@ -837,6 +847,60 @@ static int read_eye_layer(const ovrLayerHeader *h, struct eye_layer *out)
     return 0;
 }
 
+/* Where the game's threads are inside us: nonzero while in SteamVR's
+ * frame wait (WaitGetPoses) or in a frame submission. */
+static volatile LONG g_in_wait, g_in_submit;
+static volatile LONG g_frames_submitted;
+
+static int begin_frame_tracked(void)
+{
+    InterlockedIncrement(&g_in_wait);
+    int ok = vr_backend_begin_frame();
+    InterlockedDecrement(&g_in_wait);
+    return ok;
+}
+
+/* Stall watchdog. If frames stop for 3 s after the game has started
+ * submitting, log what the game is doing with us, every 3 s until frames
+ * resume: still calling the API (and what last), or blocked inside our
+ * frame wait or submission. A game that stops submitting otherwise leaves
+ * no trace in this log. */
+static DWORD WINAPI stall_watchdog(void *arg)
+{
+    (void)arg;
+    LONG last_frames = 0, last_calls = 0;
+    int stalled = 0;
+    for (;;) {
+        Sleep(3000);
+        LONG frames = g_frames_submitted, calls = g_api_calls;
+        if (frames == 0 || frames != last_frames) {
+            if (stalled)
+                LOG("watchdog: frames resumed (frame %ld)", frames);
+            stalled = 0;
+        } else {
+            stalled += 3;
+            LOG("watchdog: no frame for %d s (last frame %ld); %ld API calls since "
+                "last check, last called %s; in SteamVR frame wait: %s; in submit: %s",
+                stalled, frames, calls - last_calls,
+                g_last_api ? g_last_api : "(none)",
+                g_in_wait ? "yes" : "no", g_in_submit ? "yes" : "no");
+        }
+        last_frames = frames;
+        last_calls = calls;
+    }
+    return 0;
+}
+
+static void start_stall_watchdog(void)
+{
+    static LONG started;
+    if (InterlockedExchange(&started, 1))
+        return;
+    HANDLE t = CreateThread(NULL, 0, stall_watchdog, NULL, 0, NULL);
+    if (t)
+        CloseHandle(t);
+}
+
 static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
 {
     int submitted = 0;
@@ -907,8 +971,7 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                     swapchain_d3d_preclear_next(l->ColorTexture[1]);
             }
         }
-    static LONG frames_;
-    LONG f = InterlockedIncrement(&frames_);
+    LONG f = InterlockedIncrement(&g_frames_submitted);
     /* Frame pacing: time between submits, summarised every 900 frames. A
      * game that misses the display's frame time forces SteamVR to
      * reproject, which looks like judder in the headset only. */
@@ -977,9 +1040,11 @@ EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
      * every frame a vsync late). The very first frame waits up front. */
     static LONG waited_once;
     if (!InterlockedExchange(&waited_once, 1))
-        vr_backend_begin_frame();
+        begin_frame_tracked();
+    InterlockedIncrement(&g_in_submit);
     ovrResult r = submit_layers(layerPtrList, layerCount);
-    vr_backend_begin_frame();
+    InterlockedDecrement(&g_in_submit);
+    begin_frame_tracked();
     return r;
 }
 
@@ -998,7 +1063,7 @@ EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
     (void)frameIndex;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    return vr_backend_begin_frame() ? ovrSuccess
+    return begin_frame_tracked() ? ovrSuccess
         : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
 }
 
@@ -1021,7 +1086,10 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
-    return submit_layers(layerPtrList, layerCount);
+    InterlockedIncrement(&g_in_submit);
+    ovrResult r = submit_layers(layerPtrList, layerCount);
+    InterlockedDecrement(&g_in_submit);
+    return r;
 }
 
 EXPORT int ovr_GetTrackingOriginType(ovrSession session)
