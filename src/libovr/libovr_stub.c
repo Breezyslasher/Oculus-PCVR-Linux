@@ -978,6 +978,9 @@ EXPORT float ovr_GetFloat(ovrSession s, const char *name, float def)
         return 1.675f;
     if (!strcmp(name, "IPD"))
         return 0.064f;
+    /* Seconds per display frame; the real runtime reports the HMD's rate. */
+    if (!strcmp(name, "VsyncToNextVsync"))
+        return 1.0f / 90.0f;
     return def;
 }
 
