@@ -1017,13 +1017,31 @@ static void create_hmd_connected_event(void)
             connected ? "signaled: HMD present" : "not signaled: no HMD");
 }
 
+/* Log every OVRSTUB_* variable the process sees, so a log shows which
+ * debug switches were actually in effect (launch options are easy to typo). */
+static void log_ovrstub_env(void)
+{
+    wchar_t *env = GetEnvironmentStringsW();
+    int n = 0;
+    for (wchar_t *e = env; e && *e; e += wcslen(e) + 1)
+        if (!wcsncmp(e, L"OVRSTUB_", 8)) {
+            LOG("env %ls", e);
+            n++;
+        }
+    if (!n)
+        LOG("env: no OVRSTUB_* variables set");
+    if (env)
+        FreeEnvironmentStringsW(env);
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         QueryPerformanceFrequency(&g_qpc_freq);
-        LOG("loaded (no-HMD stub)");
+        LOG("loaded (build %s)", OVRSTUB_BUILD_ID);
+        log_ovrstub_env();
         create_hmd_connected_event();
         sigcheck_install();
         redirect_install(inst);
