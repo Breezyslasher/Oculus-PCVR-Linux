@@ -49,6 +49,33 @@ file as things get confirmed or disproved on real games.
   `<Game>_Data/Managed/Oculus.Platform.dll` (e.g. `ilspycmd`) and read the
   `MessageType` enum, then fix the header or set `OVRSTUB_MSGTYPE_*` at runtime.
 
+## Store and downloads (Milestone 1)
+
+Based on ComputerElite's
+[OculusGraphQLApiLib](https://github.com/ComputerElite/OculusGraphQLApiLib)
+(last commit May 2026), the library behind Oculus Downgrader. Implemented in
+`launcher/ovrl/store.py` and `download.py`. **Not yet tested against the live
+store.**
+
+- **Auth:** the user's own access token (`FRL…` or `OC…`) from a logged-in
+  browser session. The library also embeds Meta's own app tokens as
+  fallbacks; we deliberately don't use them.
+- **GraphQL:** `POST https://graph.oculus.com/graphql?access_token=…&variables=…&doc_id=…`
+  with persisted query IDs: current user `4149322231793299`, entitlements
+  `4850747515044496`, an app's builds `2885322071572384`
+  (`{"applicationID": …}` → `node.primary_binaries.nodes[]` with `id`,
+  `version`, `version_code`, `binary_release_channels`).
+- **Manifest:** `GET https://securecdn.oculus.com/binaries/download/?id=<build>&access_token=…&get_manifest=1`
+  returns a zip containing one JSON file: `launchFile`, `launchParameters`,
+  `files{path: {sha256, size, segmentSize, segments[[?, sha256, ?], …]}}`.
+  Only index 1 (the SHA-256) of a segment entry is relied on. The others
+  look like offset and size.
+- **Segments:** `GET https://securecdn.oculus.com/binaries/segment/?access_token=…&binary_id=<build>&segment_sha256=…`
+  returns a zlib stream. The SHA-256 is over the decompressed bytes. Files are
+  their segments concatenated in manifest order.
+- The original Milestone 1 idea, `ovr-platform-util`, isn't needed for this
+  path. It stays a fallback if the CDN route stops working.
+
 ## LibOVR ABI
 
 - Struct layouts in `src/libovr/ovr_types.h` were cross-checked against the
