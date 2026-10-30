@@ -469,12 +469,29 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
     return ovrSuccess;
 }
 
+/* The device GUID audio engines (DirectSound, and FMOD inside Unity) know
+ * an endpoint by is the trailing {GUID} of its MMDevice id
+ * ("{0.0.0.00000000}.{GUID}"). Unity matches the GUID from
+ * ovr_GetAudioDeviceOutGuid against that list every frame; DirectSound's
+ * "default device" GUID never matches, so it logged an error each frame. */
+static int default_endpoint_guid(int flow, GUID *out)
+{
+    wchar_t id[OVR_AUDIO_MAX_DEVICE_STR_SIZE];
+    default_endpoint_id(flow, id);
+    wchar_t *brace = wcsrchr(id, L'{');
+    return brace && SUCCEEDED(CLSIDFromString(brace, out));
+}
+
 EXPORT ovrResult ovr_GetAudioDeviceOutGuid(GUID *guid)
 {
     TRACE_FIRST();
     if (!guid)
         return set_error(ovrError_InvalidParameter, "null guid");
-    *guid = kDsDefaultPlayback;
+    static GUID cached;
+    static int have;
+    if (!have)
+        have = default_endpoint_guid(eRender, &cached) ? 1 : -1;
+    *guid = have > 0 ? cached : kDsDefaultPlayback;
     return ovrSuccess;
 }
 
@@ -483,7 +500,11 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuid(GUID *guid)
     TRACE_FIRST();
     if (!guid)
         return set_error(ovrError_InvalidParameter, "null guid");
-    *guid = kDsDefaultCapture;
+    static GUID cached;
+    static int have;
+    if (!have)
+        have = default_endpoint_guid(eCapture, &cached) ? 1 : -1;
+    *guid = have > 0 ? cached : kDsDefaultCapture;
     return ovrSuccess;
 }
 
