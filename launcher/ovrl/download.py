@@ -127,18 +127,22 @@ class _Progress:
 
 
 def download_build(token: str, build_id: str, dest: Path, workers: int = 8,
-                   on_progress=None) -> dict:
+                   on_progress=None, only=None) -> dict:
     """Download every file of a Rift build into dest. Returns the manifest.
 
     on_progress(done_bytes, total_bytes), if given, is called as data arrives
-    (from the calling thread)."""
+    (from the calling thread). only(name) -> bool, if given, picks which
+    files to fetch (e.g. two DLLs out of Meta's 390 MB runtime package)."""
     dest.mkdir(parents=True, exist_ok=True)
     manifest = fetch_manifest(token, build_id)
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     files = manifest.get("files") or {}
+    if only is not None:
+        files = {n: i for n, i in files.items() if only(n)}
     if not files:
-        raise StoreError("manifest lists no files")
+        raise StoreError("manifest lists no files" if only is None
+                         else "none of the wanted files are in this package")
     todo = []
     for name, info in files.items():
         path = _safe_path(dest, name)

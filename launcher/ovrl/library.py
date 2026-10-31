@@ -8,6 +8,7 @@ installed games in games.json and the store library cache in library.json.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -505,3 +506,88 @@ def apply_identity(token: str | None = None, log=print) -> dict:
             n += 1
     log(f"wrote your Meta identity ({ident['oculus_id']}) beside {n} game(s)")
     return ident
+
+
+# --- Meta's genuine runtime DLLs, fetched from Meta ---
+
+META_PACKAGES = {
+    # package (as Meta's installer names it) -> the DLL we need from it
+    "oculus-runtime": cli.RUNTIME_DLL,
+    "oculus-platform-runtime": cli.PLATFORM_DLL,
+}
+
+
+def _pick_dll(names: list[str], dll: str) -> str | None:
+    """The 64-bit copy of `dll` among a package's file names, preferring the
+    one in the runtime's own folder."""
+    hits = [n for n in names if n.replace("\\", "/").rsplit("/", 1)[-1].lower() == dll.lower()]
+    hits.sort(key=lambda n: (("oculus-runtime" not in n.lower()
+                              and "platform" not in n.lower()), "32" in n, len(n)))
+    return hits[0] if hits else None
+
+
+def get_meta_runtime(token: str | None = None, apply: bool = True, log=print) -> dict:
+    """Download Meta's genuine LibOVRRT64_1.dll and LibOVRPlatform64_1.dll
+    straight from Meta, as the official PC installer does, using your own
+    login; set them as real_runtime / real_platform and (with apply) put them
+    beside your installed games.
+
+    Only those two files are fetched from Meta's packages, each verified
+    against Meta's SHA-256 hashes. Nothing is redistributed: every user
+    downloads their own copy from Meta.
+    """
+    from .download import fetch_manifest as _manifest
+    token = token or store.load_token()
+    config = store.bootstrap_config(token)["body"]
+    apps = {a.get("canonical_name"): a for a in config.get("applications") or []}
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") \
+        / "ovrl" / "meta-runtime"
+    got = {}
+    for package, dll in META_PACKAGES.items():
+        app = apps.get(package)
+        if not app or not app.get("binary_id"):
+            raise LibraryError(f"Meta's installer config has no {package} package")
+        binary = str(app["binary_id"])
+        names = list((_manifest(token, binary).get("files") or {}).keys())
+        want = _pick_dll(names, dll)
+        if not want:
+            raise LibraryError(f"{dll} not found in Meta's {package} package")
+        dest = base / f"{package}-{binary}"
+        log(f"downloading {dll} from Meta's {package} package (binary {binary})")
+        download_build(token, binary, dest, only=lambda n, w=want: n == w)
+        path = dest / want.replace("\\", "/")
+        if not path.is_file() or not cli.pe_is_x64(path) or cli._is_our_stub(path):
+            raise LibraryError(f"{path} isn't the 64-bit DLL expected")
+        got[dll] = path
+        log(f"  -> {path}")
+    save_config({"real_runtime": str(got[cli.RUNTIME_DLL]),
+                 "real_platform": str(got[cli.PLATFORM_DLL])})
+    log("set real_runtime and real_platform to Meta's genuine DLLs")
+    if apply:
+        apply_meta_runtime(log=log)
+    return {k: str(v) for k, v in got.items()}
+
+
+def apply_meta_runtime(log=print) -> int:
+    """Put the genuine DLLs beside every game that has our shim: the runtime
+    as LibOVRRT64_1.dll (the signature check reads it) and, where our
+    Platform stub is staged as ovrstub_platform.dll, the genuine Platform
+    DLL as LibOVRPlatform64_1.dll (games that check its signature need it;
+    the shim still loads our stub in its place)."""
+    cfg = load_config()
+    rt, pf = cfg.get("real_runtime"), cfg.get("real_platform")
+    dirs = {Path(g["exe"]).parent for g in games().values()}
+    root = Path(cfg["games_dir"]).expanduser()
+    if root.is_dir():
+        dirs |= {p.parent for p in root.rglob(cli.SHIM_INJECT_NAME)}
+    n = 0
+    for d in sorted(dirs):
+        if not (d / cli.SHIM_INJECT_NAME).is_file():
+            continue
+        if rt:
+            cli._install_file(Path(rt), d / cli.RUNTIME_DLL, "genuine runtime")
+        if pf and (d / cli.PLATFORM_INJECT_NAME).is_file():
+            cli._install_file(Path(pf), d / cli.PLATFORM_DLL, "genuine Platform SDK")
+        n += 1
+    log(f"put Meta's genuine DLLs beside {n} game(s)")
+    return n

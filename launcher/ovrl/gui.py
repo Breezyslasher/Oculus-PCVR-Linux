@@ -245,6 +245,9 @@ def _post(path: str, body: dict) -> dict:
         _run("organizing", library.organize, str(body.get("folder", "")),
              _token_or_none(), S.say)
         return {"ok": True}
+    if path == "/api/get-runtime":
+        _run("getting Meta's runtime", library.get_meta_runtime, None, True, S.say)
+        return {"ok": True}
     if path == "/api/set-proton":
         if cli._steam_running():
             raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
@@ -342,6 +345,9 @@ How to get it: see <a href="https://github.com/Breezyslasher/Oculus-PCVR-Linux#d
 <button class="sec" onclick="scanOrg()">Scan</button>
 <button id="orgrun" onclick="runOrg()" disabled>Rename &amp; move</button></div>
 <table id="org" style="margin-top:8px"></table></div>
+<div class="card"><h2>Meta runtime files</h2>
+<p class="mute">Games check that Meta's genuine LibOVRRT64_1.dll (and for some, LibOVRPlatform64_1.dll) sits beside them. This downloads both straight from Meta with your login, as Meta's own PC installer does (only those two files), sets them in Settings and puts them beside your games. No Windows PC needed.</p>
+<div class="bar"><button onclick="post('/api/get-runtime')">Get Meta runtime files</button></div></div>
 <div class="card"><h2>Settings</h2><p class="mute">games_dir is where downloads go. Browse opens your desktop&rsquo;s file dialog; remember to Save.</p><div class="cfg" id="cfg"></div>
 <div class="bar" style="margin-top:10px"><button onclick="saveCfg()">Save settings</button></div></div>
 <div class="card"><h2>Log</h2><pre id="log"></pre></div>

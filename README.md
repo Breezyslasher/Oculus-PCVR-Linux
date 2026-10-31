@@ -263,6 +263,21 @@ release channel, and which one is installed) and press Install. From the
 terminal: `python3 -m ovrl versions <id>` lists them and
 `python3 -m ovrl install <id> --build-id <build>` installs one.
 
+### Meta's genuine DLLs, without a Windows PC
+
+Games check that Meta's own signed `LibOVRRT64_1.dll` (and some, such as
+Lost, `LibOVRPlatform64_1.dll`) sits beside them. **Get Meta runtime files**
+on the page, or `python3 -m ovrl get-runtime`, downloads both straight from
+Meta with your login, the way Meta's own PC installer does: it asks
+`graph.oculus.com/bootstrap_installer_config` for the current
+`oculus-runtime` and `oculus-platform-runtime` packages and fetches just
+those two files (each checked against Meta's SHA-256), into
+`~/.local/share/ovrl/meta-runtime/`. It then sets `real_runtime` /
+`real_platform` and puts the DLLs beside every game that has the shim (the
+Platform DLL only where our stub is staged as `ovrstub_platform.dll`, so the
+shim still loads the stub). Nothing of Meta's is stored in this repository;
+each user downloads their own copy from Meta.
+
 Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
 Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
 locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it

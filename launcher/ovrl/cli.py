@@ -837,6 +837,16 @@ def cmd_runtime_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_get_runtime(args: argparse.Namespace) -> int:
+    """Fetch Meta's genuine runtime + Platform DLLs from Meta."""
+    from . import library
+    got = _library_call(library.get_meta_runtime, apply=not args.no_apply)
+    print("\nGenuine DLLs from Meta:")
+    for name, path in got.items():
+        print(f"  {name}: {path}")
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
     gui.serve(args.port, open_browser=not args.no_browser)
@@ -1023,6 +1033,12 @@ def build_parser() -> argparse.ArgumentParser:
                                              "packages, tokens redacted")
     s.add_argument("--channel", default="LIVE")
     s.set_defaults(func=cmd_runtime_probe)
+
+    s = sub.add_parser("get-runtime", help="download Meta's genuine LibOVRRT64_1.dll "
+                       "and LibOVRPlatform64_1.dll from Meta (no Windows PC needed)")
+    s.add_argument("--no-apply", action="store_true",
+                   help="only download and set them; don't copy them into your games")
+    s.set_defaults(func=cmd_get_runtime)
 
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)
