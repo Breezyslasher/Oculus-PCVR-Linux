@@ -163,3 +163,48 @@ def app_builds(token: str, app_id: str) -> tuple[str, list[Build]]:
                             int(b.get("created_date") or 0), channels))
     builds.sort(key=lambda b: b.version_code, reverse=True)
     return node.get("display_name", ""), builds
+
+
+# ---- Meta's own PC software packages (research) ----------------------------
+
+BOOTSTRAP_URL = os.environ.get("OVRL_BOOTSTRAP_URL",
+                               "https://graph.oculus.com/bootstrap_installer_config")
+
+
+def bootstrap_config(token: str, channel: str = "LIVE") -> dict:
+    """What Meta's PC installer asks first: which packages (oculus-runtime,
+    oculus-client, ...) make up the current release, by binary id.
+
+    Same endpoint and parameters as Meta's own setup program, but with the
+    user's own token. Tried as POST then GET, since the installer's method
+    isn't visible from its strings.
+    """
+    params = urllib.parse.urlencode({"access_token": token, "channel_name": channel})
+    last = None
+    for method in ("POST", "GET"):
+        url = BOOTSTRAP_URL if method == "POST" else f"{BOOTSTRAP_URL}?{params}"
+        data = params.encode() if method == "POST" else None
+        req = urllib.request.Request(url, data=data, method=method,
+                                     headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                return {"method": method, "body": json.load(resp)}
+        except urllib.error.HTTPError as e:
+            last = f"{method}: HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
+        except (urllib.error.URLError, ValueError) as e:
+            last = f"{method}: {getattr(e, 'reason', e)}"
+    raise StoreError(f"bootstrap_installer_config failed ({last})")
+
+
+def redact(value):
+    """A copy of a JSON value with tokens and signed URLs blanked, safe to
+    show or paste."""
+    if isinstance(value, dict):
+        return {k: ("<redacted>" if any(w in k.lower() for w in ("token", "secret", "signature"))
+                    else redact(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    if isinstance(value, str):
+        if "access_token=" in value or "oh=" in value or value.startswith(("OC|", "FRL")):
+            return re.sub(r"\?.*", "?<redacted>", value) if "://" in value else "<redacted>"
+    return value

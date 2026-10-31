@@ -828,6 +828,15 @@ def cmd_identity(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_runtime_probe(args: argparse.Namespace) -> int:
+    """Research: ask Meta which PC software packages exist (redacted output)."""
+    import json
+    res = store.bootstrap_config(store.load_token(), args.channel)
+    print(f"bootstrap_installer_config answered ({res['method']}):")
+    print(json.dumps(store.redact(res["body"]), indent=2)[:20000])
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
     gui.serve(args.port, open_browser=not args.no_browser)
@@ -1009,6 +1018,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("identity", help="let games see your real Meta identity "
                                         "(user ID and name; no token is shared)")
     s.set_defaults(func=cmd_identity)
+
+    s = sub.add_parser("runtime-probe", help="(research) list Meta's PC software "
+                                             "packages, tokens redacted")
+    s.add_argument("--channel", default="LIVE")
+    s.set_defaults(func=cmd_runtime_probe)
 
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)
