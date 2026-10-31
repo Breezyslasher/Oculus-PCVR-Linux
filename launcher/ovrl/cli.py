@@ -125,7 +125,7 @@ def _restore_dir(game_dir: Path) -> bool:
             restored = True
     # The injector and the distinctly-named shim are ours alone; a game never
     # ships them, so remove them by name.
-    for name in (SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, INJECTOR):
+    for name in (SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, INJECTOR, IDENTITY_FILE):
         target = game_dir / name
         if target.is_file():
             target.unlink()
@@ -644,6 +644,45 @@ def _auto_hmd(exe: Path, hmd: str | None) -> str | None:
     return ""
 
 
+IDENTITY_FILE = "ovrstub_user.ini"
+
+
+def fetch_identity(token: str) -> dict:
+    """Your Meta identity (no secrets), fetched with your saved login and
+    cached in ~/.config/ovrl/identity.json for the Platform stub."""
+    import json
+    user = store.current_user(token)
+    alias = user.get("alias") or user.get("display_name") or ""
+    ident = {"id": str(user.get("id", "")), "oculus_id": alias,
+             "display_name": user.get("display_name") or alias}
+    path = store.config_dir() / "identity.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ident, indent=2))
+    return ident
+
+
+def cached_identity() -> dict | None:
+    import json
+    try:
+        ident = json.loads((store.config_dir() / "identity.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return ident if ident.get("id", "").isdigit() else None
+
+
+def write_identity(exe_dir: Path, ident: dict | None = None) -> bool:
+    """Write ovrstub_user.ini (id, Oculus ID, display name) beside a game's
+    Platform stub so games see your real Meta identity, not "LinuxPlayer"."""
+    ident = ident or cached_identity()
+    if not ident:
+        return False
+    clean = {k: str(ident.get(k, "")).replace("\n", " ").replace("\r", " ")
+             for k in ("id", "oculus_id", "display_name")}
+    (exe_dir / IDENTITY_FILE).write_text(
+        "".join(f"{k}={v}\n" for k, v in clean.items()), encoding="utf-8")
+    return True
+
+
 def stage_game(exe: Path, build: Path, real_runtime: str | None,
                real_platform: str | None, openvr: str | None, log=print) -> None:
     """Put the genuine runtime, Platform stub, shim, injector and OpenVR beside
@@ -658,6 +697,8 @@ def stage_game(exe: Path, build: Path, real_runtime: str | None,
     _install_file(_build_file(build, PLATFORM_DLL), exe_dir / PLATFORM_INJECT_NAME,
                   "Platform stub")
     _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
+    if write_identity(exe_dir):
+        log(f"wrote your Meta identity to {exe_dir / IDENTITY_FILE}")
     found = _find_openvr_api(openvr)
     if found:
         _install_file(found, exe_dir / OPENVR_DLL, OPENVR_DLL)
@@ -679,6 +720,7 @@ def cmd_login(args: argparse.Namespace) -> int:
         sys.exit(f"ovrl: that doesn't look like a user token: {problem}")
     user = store.current_user(token)
     path = store.save_token(token)
+    fetch_identity(token)
     print(f"logged in as {user.get('alias') or user.get('display_name') or user.get('id')}")
     print(f"token saved to {path} (readable only by you)")
     return 0
@@ -775,6 +817,14 @@ def cmd_set_proton(args: argparse.Namespace) -> int:
     from . import library
     cfg = library.load_config()
     set_proton_for_shortcuts(args.tool, cfg.get("steam_root"), cfg.get("steam_user"))
+    return 0
+
+
+def cmd_identity(args: argparse.Namespace) -> int:
+    """Fetch your Meta identity and write it beside every game's shim."""
+    from . import library
+    ident = _library_call(library.apply_identity)
+    print(f"games now see you as {ident['oculus_id']} (Meta user {ident['id']})")
     return 0
 
 
@@ -948,6 +998,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("tool", nargs="?", help="e.g. proton_11 (default: the one "
                    "chosen in Steam's settings for all other titles)")
     s.set_defaults(func=cmd_set_proton)
+
+    s = sub.add_parser("identity", help="let games see your real Meta identity "
+                                        "(user ID and name; no token is shared)")
+    s.set_defaults(func=cmd_identity)
 
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)

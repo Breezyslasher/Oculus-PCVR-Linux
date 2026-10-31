@@ -251,6 +251,12 @@ then again with `--yes`) renames each to the game's name, moves it into
 `games_dir`, repoints its Steam shortcut (keeping its Proton setting) and adds
 it to the installed list. Quit Steam first.
 
+Games that ask the Oculus Platform who is playing see your real Meta
+identity (user ID, Oculus ID, display name) rather than "LinuxPlayer":
+logging in fetches it once and ovrl writes it to `ovrstub_user.ini` beside
+each game's shim (no token or password goes in it). `python3 -m ovrl
+identity` re-applies it to every game.
+
 Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
 Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
 locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it

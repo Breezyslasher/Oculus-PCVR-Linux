@@ -157,6 +157,10 @@ def _login(raw: str) -> None:
     store.save_token(token)
     S.user = user.get("alias") or user.get("display_name") or user.get("id")
     S.say(f"logged in as {S.user}")
+    try:
+        library.apply_identity(token, log=S.say)
+    except library.LibraryError as e:
+        S.say(f"identity not written: {e}")
 
 
 def _shell(cmd: list[str]) -> None:

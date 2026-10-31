@@ -310,6 +310,7 @@ def update_shims(log=print) -> list[str]:
         cli._install_file(shim, exe_dir / cli.SHIM_INJECT_NAME, "shim")
         cli._install_file(injector, exe_dir / cli.INJECTOR, "injector")
         cli._install_file(platform, exe_dir / cli.PLATFORM_INJECT_NAME, "Platform stub")
+        cli.write_identity(exe_dir)
         for name, src in ((cli.PLATFORM_DLL, platform), (cli.RUNTIME_DLL, shim)):
             target = exe_dir / name
             if target.is_file() and cli._is_our_stub(target):
@@ -426,3 +427,25 @@ def set_proton(tool: str | None = None, log=print) -> list[str]:
     cfg = load_config()
     return _call(cli.set_proton_for_shortcuts, tool or cfg.get("proton_tool"),
                  cfg.get("steam_root"), cfg.get("steam_user"), log=log)
+
+
+def apply_identity(token: str | None = None, log=print) -> dict:
+    """Fetch your Meta identity and write it beside every game's shim: the
+    installed games and any other folder under games_dir holding our shim."""
+    try:
+        token = token or store.load_token()
+    except store.StoreError:
+        token = None
+    ident = cli.fetch_identity(token) if token else cli.cached_identity()
+    if not ident:
+        raise LibraryError("log in first, so your identity can be fetched")
+    dirs = {Path(g["exe"]).parent for g in games().values()}
+    root = Path(load_config()["games_dir"]).expanduser()
+    if root.is_dir():
+        dirs |= {p.parent for p in root.rglob(cli.SHIM_INJECT_NAME)}
+    n = 0
+    for d in sorted(dirs):
+        if (d / cli.SHIM_INJECT_NAME).is_file() and cli.write_identity(d, ident):
+            n += 1
+    log(f"wrote your Meta identity ({ident['oculus_id']}) beside {n} game(s)")
+    return ident

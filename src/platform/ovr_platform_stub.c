@@ -5,11 +5,12 @@
  * The real DLL talks to the Oculus service; this one answers locally:
  *   - initialization always succeeds
  *   - the entitlement check always passes
- *   - the logged-in user is a fixed local identity
+ *   - the logged-in user is your real Meta identity when `ovrl` wrote
+ *     ovrstub_user.ini beside this DLL, else a fixed local one
  * Every request is answered through the normal message queue, so games that
  * poll ovr_PopMessage() see the same flow as with the real runtime.
  *
- * Environment:
+ * Environment (overrides ovrstub_user.ini):
  *   OVRSTUB_USER_ID     numeric user ID   (default 1)
  *   OVRSTUB_USER_NAME   Oculus ID / display name (default "LinuxPlayer")
  *   OVRSTUB_LOCALE      locale string     (default "en_US")
@@ -70,17 +71,55 @@ static ovrMessageType message_type(const char *name, ovrMessageType fallback)
     return (v && *v) ? (ovrMessageType)strtoul(v, NULL, 0) : fallback;
 }
 
-static void load_identity(void)
+/* Your real Meta identity, if `ovrl` wrote it beside this DLL: an
+ * ovrstub_user.ini with lines id=, oculus_id= and display_name= (fetched with
+ * your saved login; it holds no token or password). */
+static void read_identity_file(HINSTANCE self)
+{
+    char path[MAX_PATH + 32];
+    DWORD n = GetModuleFileNameA(self, path, MAX_PATH);
+    if (!n || n >= MAX_PATH)
+        return;
+    char *slash = strrchr(path, '\\');
+    if (!slash)
+        return;
+    strcpy(slash + 1, "ovrstub_user.ini");
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq || !eq[1])
+            continue;
+        *eq = 0;
+        const char *val = eq + 1;
+        if (!strcmp(line, "id"))
+            g_user.id = _strtoui64(val, NULL, 10);
+        else if (!strcmp(line, "oculus_id"))
+            snprintf(g_user.oculus_id, sizeof(g_user.oculus_id), "%s", val);
+        else if (!strcmp(line, "display_name"))
+            snprintf(g_user.display_name, sizeof(g_user.display_name), "%s", val);
+    }
+    fclose(f);
+    LOG("identity from %s", path);
+}
+
+static void load_identity(HINSTANCE self)
 {
     const char *v;
 
     g_user.id = 1;
     strcpy(g_user.oculus_id, "LinuxPlayer");
+    g_user.display_name[0] = 0;
+    read_identity_file(self);
     if ((v = getenv("OVRSTUB_USER_ID")) && *v)
         g_user.id = _strtoui64(v, NULL, 0);
     if ((v = getenv("OVRSTUB_USER_NAME")) && *v)
         snprintf(g_user.oculus_id, sizeof(g_user.oculus_id), "%s", v);
-    strcpy(g_user.display_name, g_user.oculus_id);
+    if (!g_user.display_name[0] || getenv("OVRSTUB_USER_NAME"))
+        strcpy(g_user.display_name, g_user.oculus_id);
     if ((v = getenv("OVRSTUB_LOCALE")) && *v)
         snprintf(g_locale, sizeof(g_locale), "%s", v);
 }
@@ -341,10 +380,10 @@ EXPORT const char *ovr_Error_GetDisplayableMessage(ovrErrorHandle e)
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
-    (void)inst; (void)reserved;
+    (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         InitializeCriticalSection(&g_lock);
-        load_identity();
+        load_identity(inst);
         LOG("loaded (stub; user %llu \"%s\")",
             (unsigned long long)g_user.id, g_user.oculus_id);
     }
