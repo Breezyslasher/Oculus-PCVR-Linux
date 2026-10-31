@@ -293,6 +293,136 @@ double vr_backend_seconds_to_photons(void)
     return s > 0.0 ? s : 0.0;
 }
 
+/* ---- Tracking origin ----------------------------------------------------
+ * LibOVR games pick an origin: eye level (the SDK default; poses relative to
+ * where the head was at the last recenter) or floor level (y measured from
+ * the floor). SteamVR's standing universe is floor level, so we hand out
+ * standing poses moved into a reference frame: subtract the reference
+ * position and undo its yaw. Eye level takes the first head pose read as its
+ * reference; floor level starts at SteamVR's own origin. Recentering moves
+ * the reference to the current head (keeping y = 0 at floor level). Frames
+ * the game submits carry render poses in its frame; those go back to
+ * standing space before reaching the compositor. */
+static int g_floor_level;
+static int g_have_ref;
+static float g_ref_yaw;
+static ovrVector3f g_ref_pos;
+
+static ovrQuatf quat_mul(ovrQuatf a, ovrQuatf b)
+{
+    ovrQuatf r = {
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+    return r;
+}
+
+static ovrQuatf yaw_quat(float yaw)
+{
+    ovrQuatf q = {0.0f, sinf(yaw * 0.5f), 0.0f, cosf(yaw * 0.5f)};
+    return q;
+}
+
+/* Rotate v about +Y by yaw. */
+static ovrVector3f yaw_rotate(float yaw, ovrVector3f v)
+{
+    float c = cosf(yaw), s = sinf(yaw);
+    ovrVector3f r = {c * v.x + s * v.z, v.y, -s * v.x + c * v.z};
+    return r;
+}
+
+/* Heading of an orientation: rotation about +Y of its forward (-Z) axis. */
+static float yaw_of(ovrQuatf q)
+{
+    /* forward = q * (0,0,-1) */
+    float fx = -2.0f * (q.x * q.z + q.w * q.y);
+    float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+    return atan2f(-fx, -fz);
+}
+
+static void set_reference(ovrPosef head)
+{
+    g_ref_yaw = yaw_of(head.Orientation);
+    g_ref_pos = head.Position;
+    if (g_floor_level)
+        g_ref_pos.y = 0.0f;
+    g_have_ref = 1;
+    LOG("tracking origin (%s level) set at (%.2f %.2f %.2f), heading %.0f deg",
+        g_floor_level ? "floor" : "eye", g_ref_pos.x, g_ref_pos.y, g_ref_pos.z,
+        g_ref_yaw * 57.29578f);
+}
+
+/* Standing space -> the game's tracking frame. */
+static void to_game_space(ovrPoseStatef *s)
+{
+    if (!g_have_ref)
+        return;
+    ovrVector3f d = {s->ThePose.Position.x - g_ref_pos.x,
+                     s->ThePose.Position.y - g_ref_pos.y,
+                     s->ThePose.Position.z - g_ref_pos.z};
+    s->ThePose.Position = yaw_rotate(-g_ref_yaw, d);
+    s->ThePose.Orientation = quat_mul(yaw_quat(-g_ref_yaw), s->ThePose.Orientation);
+    s->LinearVelocity = yaw_rotate(-g_ref_yaw, s->LinearVelocity);
+    s->AngularVelocity = yaw_rotate(-g_ref_yaw, s->AngularVelocity);
+}
+
+/* The game's tracking frame -> standing space (for submitted render poses). */
+static ovrPosef to_standing_space(ovrPosef p)
+{
+    if (!g_have_ref)
+        return p;
+    ovrVector3f r = yaw_rotate(g_ref_yaw, p.Position);
+    p.Position.x = r.x + g_ref_pos.x;
+    p.Position.y = r.y + g_ref_pos.y;
+    p.Position.z = r.z + g_ref_pos.z;
+    p.Orientation = quat_mul(yaw_quat(g_ref_yaw), p.Orientation);
+    return p;
+}
+
+static ovrPosef raw_head_pose(void)
+{
+    ovrPosef p;
+    memset(&p, 0, sizeof(p));
+    p.Orientation.w = 1.0f;
+    TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
+    memset(poses, 0, sizeof(poses));
+    g_system->GetDeviceToAbsoluteTrackingPose(
+        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        k_unMaxTrackedDeviceCount);
+    if (poses[k_unTrackedDeviceIndex_Hmd].bPoseIsValid)
+        p = pose_from_matrix(&poses[k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking);
+    return p;
+}
+
+void vr_backend_set_origin(int floor_level)
+{
+    if (floor_level == g_floor_level && (g_have_ref || floor_level))
+        return;
+    g_floor_level = floor_level;
+    g_have_ref = 0;   /* eye level re-captures on the next head pose read */
+    LOG("tracking origin type: %s level", floor_level ? "floor" : "eye");
+}
+
+int vr_backend_origin_is_floor(void)
+{
+    return g_floor_level;
+}
+
+void vr_backend_recenter(void)
+{
+    if (g_active)
+        set_reference(raw_head_pose());
+}
+
+void vr_backend_specify_origin(ovrPosef origin)
+{
+    /* `origin` is in the current game frame; make it the new reference. */
+    ovrPosef world = to_standing_space(origin);
+    set_reference(world);
+}
+
 ovrPoseStatef vr_backend_head_pose(float predict_seconds)
 {
     ovrPoseStatef s;
@@ -318,6 +448,9 @@ ovrPoseStatef vr_backend_head_pose(float predict_seconds)
         s.LinearVelocity.x = hmd->vVelocity.v[0];
         s.LinearVelocity.y = hmd->vVelocity.v[1];
         s.LinearVelocity.z = hmd->vVelocity.v[2];
+        if (!g_have_ref && !g_floor_level)
+            set_reference(s.ThePose);
+        to_game_space(&s);
     }
     return s;
 }
@@ -362,6 +495,7 @@ bool vr_backend_controller(int hand, struct vr_controller *out, float predict_se
         k_unMaxTrackedDeviceCount);
     if (poses[idx].bPoseIsValid) {
         fill_pose_state(&out->pose, &poses[idx]);
+        to_game_space(&out->pose);
         out->pose_valid = 1;
     }
     return true;
@@ -467,7 +601,8 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
         tp.handle = tex.handle;
         tp.eType = tex.eType;
         tp.eColorSpace = tex.eColorSpace;
-        HmdMatrix34_t eye_world = matrix_from_pose(render_pose);
+        ovrPosef standing = to_standing_space(*render_pose);
+        HmdMatrix34_t eye_world = matrix_from_pose(&standing);
         HmdMatrix34_t eye_to_head = g_system->GetEyeToHeadTransform((EVREye)eye);
         HmdMatrix34_t head_to_eye = matrix_inverse_rigid(&eye_to_head);
         tp.mDeviceToAbsoluteTracking = matrix_mul(&eye_world, &head_to_eye);

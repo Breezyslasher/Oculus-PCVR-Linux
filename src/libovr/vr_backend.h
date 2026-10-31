@@ -33,6 +33,15 @@ ovrFovPort vr_backend_fov(ovrEyeType eye);
 /* Eye pose relative to the head (HmdToEyePose), as a LibOVR pose. */
 ovrPosef vr_backend_eye_pose(ovrEyeType eye);
 
+/* Tracking origin (see vr_backend.c): eye level (0, LibOVR's default) or
+ * floor level (1); recenter moves the origin to the current head; specify
+ * makes a pose in the current frame the new origin. Head and controller
+ * poses are reported in this frame. */
+void vr_backend_set_origin(int floor_level);
+int vr_backend_origin_is_floor(void);
+void vr_backend_recenter(void);
+void vr_backend_specify_origin(ovrPosef origin);
+
 /* Latest head pose (orientation + position). Identity if unavailable. */
 ovrPoseStatef vr_backend_head_pose(float predict_seconds);
 
@@ -56,7 +65,7 @@ struct vr_controller {
     uint64_t touched;
     float axis[5][2];          /* x, y per OpenVR axis */
     int pose_valid;
-    ovrPoseStatef pose;        /* standing space, like the head pose */
+    ovrPoseStatef pose;        /* tracking-origin frame, like the head pose */
 };
 
 /* Read hand 0 (left) or 1 (right). Returns false if it isn't connected. */

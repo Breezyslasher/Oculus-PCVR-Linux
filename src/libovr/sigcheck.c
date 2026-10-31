@@ -269,6 +269,11 @@ static void install_trusted_root(void)
     CertCloseStore(store, 0);
 }
 
+int file_is_our_stub(LPCWSTR path)
+{
+    return is_our_stub_file(path);
+}
+
 void sigcheck_install(void)
 {
     install_trusted_root();

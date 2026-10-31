@@ -1,4 +1,5 @@
 #include "iat_hook.h"
+#include "sigcheck.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -672,13 +673,24 @@ void redirect_install(HMODULE self)
 {
     g_self = self;
     GetModuleFileNameW(self, g_self_path, MAX_PATH);
-    wcscpy(g_platform_path, g_self_path);
-    WCHAR *slash = (WCHAR *)base_name(g_platform_path);
-    *slash = 0;
-    if (wcslen(g_platform_path) + 32 < MAX_PATH)
-        wcscat(g_platform_path, L"LibOVRPlatform64_1.dll");
-    if (GetFileAttributesW(g_platform_path) == INVALID_FILE_ATTRIBUTES)
-        g_platform_path[0] = 0;
+    /* Our Platform stub beside this shim: ovrstub_platform.dll, its own name
+     * so Meta's genuine LibOVRPlatform64_1.dll can sit next to it for games
+     * whose Platform loader checks the file's signature (Lost: "Failed to
+     * initialize OnlineSubsystemOculus (-4)", SignatureInvalid). Older
+     * setups put the stub itself at LibOVRPlatform64_1.dll; use that only
+     * if it is ours, never Meta's real one (it needs the Oculus service). */
+    static const WCHAR *const names[] = {L"ovrstub_platform.dll", L"LibOVRPlatform64_1.dll"};
+    g_platform_path[0] = 0;
+    for (int i = 0; i < 2 && !g_platform_path[0]; i++) {
+        wcscpy(g_platform_path, g_self_path);
+        WCHAR *slash = (WCHAR *)base_name(g_platform_path);
+        *slash = 0;
+        if (wcslen(g_platform_path) + 32 < MAX_PATH)
+            wcscat(g_platform_path, names[i]);
+        if (GetFileAttributesW(g_platform_path) == INVALID_FILE_ATTRIBUTES ||
+            (i == 1 && !file_is_our_stub(g_platform_path)))
+            g_platform_path[0] = 0;
+    }
 
     /* GetSystemDirectory gives ...\system32; match its parent (C:\windows\)
      * so syswow64 and winsxs DLLs count as system too. */
@@ -690,6 +702,7 @@ void redirect_install(HMODULE self)
     }
 
     patch_all_modules();
-    LOG("installed LoadLibrary redirect for LibOVRRT64_1.dll%s",
-        g_platform_path[0] ? " and LibOVRPlatform64_1.dll" : "");
+    LOG("installed LoadLibrary redirect for LibOVRRT64_1.dll%s%ls",
+        g_platform_path[0] ? " and LibOVRPlatform64_1.dll -> " : "",
+        g_platform_path[0] ? base_name(g_platform_path) : L"");
 }

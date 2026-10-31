@@ -646,9 +646,37 @@ EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
         return set_error(ovrError_InvalidSession, #name ": no session"); \
     }
 
-NO_SESSION(ovr_SetTrackingOriginType)
-NO_SESSION(ovr_RecenterTrackingOrigin)
-NO_SESSION(ovr_SpecifyTrackingOrigin)
+/* Tracking origin: ovrTrackingOrigin_EyeLevel = 0, FloorLevel = 1. Games
+ * that want floor level say so; the rest expect eye level, LibOVR's
+ * default, and add their own standing height on top. */
+EXPORT ovrResult ovr_SetTrackingOriginType(ovrSession session, int origin)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    if (origin != 0 && origin != 1)
+        return set_error(ovrError_InvalidParameter, "unknown tracking origin");
+    vr_backend_set_origin(origin == 1);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_RecenterTrackingOrigin(ovrSession session)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    vr_backend_recenter();
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SpecifyTrackingOrigin(ovrSession session, ovrPosef originPose)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    vr_backend_specify_origin(originPose);
+    return ovrSuccess;
+}
 NO_SESSION(ovr_GetDevicePoses)
 NO_SESSION(ovr_SetControllerVibration)
 NO_SESSION(ovr_SubmitControllerVibration)
@@ -1118,7 +1146,7 @@ EXPORT int ovr_GetTrackingOriginType(ovrSession session)
 {
     TRACE_FIRST();
     (void)session;
-    return 0;
+    return vr_backend_origin_is_floor();
 }
 
 EXPORT void ovr_ClearShouldRecenterFlag(ovrSession session)

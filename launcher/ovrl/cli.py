@@ -31,6 +31,10 @@ BACKUP_SUFFIX = ".ovrl-orig"
 # The shim is injected under its own name so it never overwrites the genuine
 # LibOVRRT64_1.dll that the game's signature check reads from disk.
 SHIM_INJECT_NAME = "ovrstub_shim.dll"
+# Likewise the Platform stub, which the shim loads whenever the game loads
+# LibOVRPlatform64_1.dll, so Meta's genuine one can stay at that name for
+# games that check its signature.
+PLATFORM_INJECT_NAME = "ovrstub_platform.dll"
 OPENVR_DLL = "openvr_api.dll"
 
 # Both stub DLLs embed this marker (see the stub sources), so we can tell our
@@ -80,7 +84,7 @@ def _install_file(src: Path, target: Path, label: str) -> None:
     backup = target.with_name(target.name + BACKUP_SUFFIX)
     # The injector and shim are ours alone (no game ships them), so a
     # previous copy is never an original worth keeping.
-    ours = target.name in (INJECTOR, SHIM_INJECT_NAME)
+    ours = target.name in (INJECTOR, SHIM_INJECT_NAME, PLATFORM_INJECT_NAME)
     if target.exists() and not backup.exists() and not ours and not _is_our_stub(target):
         shutil.copy2(target, backup)
         print(f"backed up original to {backup}")
@@ -121,7 +125,7 @@ def _restore_dir(game_dir: Path) -> bool:
             restored = True
     # The injector and the distinctly-named shim are ours alone; a game never
     # ships them, so remove them by name.
-    for name in (SHIM_INJECT_NAME, INJECTOR):
+    for name in (SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, INJECTOR):
         target = game_dir / name
         if target.is_file():
             target.unlink()
@@ -607,6 +611,8 @@ def stage_game(exe: Path, build: Path, real_runtime: str | None,
     _install_stubs(exe_dir, build, real_runtime, real_platform)
     # Our shim (distinct name), the injector and OpenVR beside the exe.
     _install_file(_build_file(build, RUNTIME_DLL), exe_dir / SHIM_INJECT_NAME, "shim")
+    _install_file(_build_file(build, PLATFORM_DLL), exe_dir / PLATFORM_INJECT_NAME,
+                  "Platform stub")
     _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
     found = _find_openvr_api(openvr)
     if found:

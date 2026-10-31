@@ -6,6 +6,11 @@
 #ifndef OVRSTUB_SIGCHECK_H
 #define OVRSTUB_SIGCHECK_H
 
+#include <windows.h>
+
 void sigcheck_install(void);
+
+/* Whether the file at `path` is one of our stub DLLs (carries our marker). */
+int file_is_our_stub(LPCWSTR path);
 
 #endif
