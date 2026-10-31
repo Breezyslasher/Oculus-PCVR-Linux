@@ -297,8 +297,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # runtime's folder; it prepends the value as-is, so keep the backslash.
     env.setdefault("LIBOVR_DLL_DIR", STUB_BASE_WIN + "Support\\oculus-runtime\\")
     if not _is_windows_path(args.game_exe):
-        env.setdefault("OVRSTUB_LOG", _to_windows_path(
-            Path(args.game_exe).resolve().parent / "ovrstub.log"))
+        exe = Path(args.game_exe).resolve()
+        env.setdefault("OVRSTUB_LOG", _to_windows_path(exe.parent / log_name(exe)))
     if args.proton:
         env["STEAM_COMPAT_DATA_PATH"] = str(compat)
         env.setdefault("STEAM_COMPAT_CLIENT_INSTALL_PATH",
@@ -349,6 +349,11 @@ def cmd_steam_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def log_name(exe: Path) -> str:
+    """The shim's default log file name for a game exe (see src/common/log.c)."""
+    return f"ovrstub-{exe.stem}.log"
+
+
 def _steam_launch_options(exe: Path, hmd: str | None,
                           prefix: Path | None = None) -> str:
     """The Steam launch-options line that runs the game through the injector.
@@ -358,18 +363,13 @@ def _steam_launch_options(exe: Path, hmd: str | None,
     reaches the Wine process; everything after %command% is passed to the
     injector. Relative names resolve against the shortcut's "Start In" dir.
     """
-    # Write a fresh log next to the exe on every Steam launch so it is never
-    # confused with a stale one from an `ovrl launch` run. Forward slashes keep
-    # the shell in the launch-options field from eating backslashes; skip it if
-    # the path has a space, which a VAR=val prefix there can't carry.
+    # No OVRSTUB_LOG: the shim, staged beside the exe, logs to
+    # ovrstub-<exe name>.log there by default (see log_name).
     env_prefix = "OVRSTUB_INSTALL_ROOT_CA=1"
     if prefix:
         # Steam would otherwise give the shortcut a fresh compatdata prefix;
         # overriding it reuses one already prepared with `ovrl prefix-setup`.
         env_prefix = f"STEAM_COMPAT_DATA_PATH={prefix} " + env_prefix
-    log_win = f"Z:{exe.parent}/ovrstub.log"
-    if " " not in log_win:
-        env_prefix += f" OVRSTUB_LOG={log_win}"
     hmd_arg = f" -hmd={hmd}" if hmd else ""
     return (f'{env_prefix} %command% --wait {SHIM_INJECT_NAME} '
             f'-- "{exe.name}"{hmd_arg}')

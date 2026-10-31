@@ -28,9 +28,9 @@ static BOOL CALLBACK log_init(PINIT_ONCE once, PVOID param, PVOID *ctx)
     (void)once; (void)param; (void)ctx;
     InitializeCriticalSection(&g_log_lock);
     /* OVRSTUB_LOG picks the file; "0" turns the file off. Without it, log to
-     * ovrstub.log beside this DLL (the game's exe folder when launched
-     * through Steam), so a launch never goes unrecorded just because the
-     * launch options lost the variable. */
+     * ovrstub-<game exe name>.log beside this DLL (the game's exe folder when
+     * launched through Steam), so a launch never goes unrecorded and each
+     * game's log has its own name. */
     const char *env = getenv("OVRSTUB_LOG");
     wchar_t path[MAX_PATH + 16];
     if (env && !strcmp(env, "0"))
@@ -51,7 +51,20 @@ static BOOL CALLBACK log_init(PINIT_ONCE once, PVOID param, PVOID *ctx)
     wchar_t *slash = wcsrchr(path, L'\\');
     if (!slash)
         return TRUE;
-    wcscpy(slash + 1, L"ovrstub.log");
+    /* The game's exe name without folder or extension, e.g. "Lost-Win64-
+     * Shipping"; "game" if it can't be read. */
+    wchar_t exe[MAX_PATH], *stem = L"game";
+    DWORD m = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (m && m < MAX_PATH) {
+        wchar_t *b = wcsrchr(exe, L'\\'), *dot;
+        stem = b ? b + 1 : exe;
+        if ((dot = wcsrchr(stem, L'.')))
+            *dot = 0;
+    }
+    size_t room = MAX_PATH + 16 - (size_t)(slash + 1 - path);
+    if (wcslen(stem) + 13 > room)
+        stem = L"game";
+    swprintf(slash + 1, room, L"ovrstub-%ls.log", stem);
     g_log_file = open_log(path);
     return TRUE;
 }

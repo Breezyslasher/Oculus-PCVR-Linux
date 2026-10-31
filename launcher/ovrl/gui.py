@@ -99,7 +99,8 @@ def _check_unknown() -> None:
 
 def state() -> dict:
     lib = library.cached_library().get("apps", [])
-    installed = library.games()
+    installed = {i: {**g, "log": str(Path(g["exe"]).parent / cli.log_name(Path(g["exe"])))}
+                 for i, g in library.games().items()}
     return {
         "apps": lib,
         "installed": installed,
@@ -202,7 +203,8 @@ def _post(path: str, body: dict) -> dict:
         if not game:
             raise library.LibraryError("unknown game")
         exe_dir = Path(game["exe"]).parent
-        target = exe_dir / "ovrstub.log" if body.get("what") == "log" else exe_dir
+        target = exe_dir / cli.log_name(Path(game["exe"])) \
+            if body.get("what") == "log" else exe_dir
         if not target.exists():
             raise library.LibraryError(f"no log yet at {target}: launch the game from "
                                        "Steam first (logs are written there each launch)")
@@ -329,7 +331,7 @@ function draw(){const s=st;
   return `<tr><td>${esc(a.name)}<div class="mute">${a.id}${a.version?" · v"+esc(a.version):""}</div></td><td>${badge(a)}</td><td style="text-align:right">${act}</td></tr>`}).join("")
   :`<tr><td class="mute">${s.apps.length?"No matches.":"Press “Refresh library” to load the games you own."}</td></tr>`;
  const gs=Object.values(s.installed);
- document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.exe.replace(/[^/]*$/,""))}ovrstub.log</div></td><td>${g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
+ document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
  document.getElementById("addq").disabled=!s.queued.length||s.steam_running;
  if(!s.logged_in)document.getElementById("login").hidden=false;
  document.getElementById("upd").disabled=!s.has_git||!!s.busy;

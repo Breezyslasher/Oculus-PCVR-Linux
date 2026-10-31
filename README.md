@@ -121,8 +121,9 @@ python3 -m ovrl launch "$P" --proton "$PROTON" "$GAME/Game.exe" -hmd=OculusRift
 python3 -m ovrl stubs restore "$GAME"
 ```
 
-Logs go to stderr and to `ovrstub.log` next to the game exe (or wherever
-`OVRSTUB_LOG` points). The `[libovr-trace]` lines show which Oculus files,
+Logs go to stderr and to `ovrstub-<exe name>.log` next to the game exe, e.g.
+`ovrstub-EasternEdge-RC3.log` (or wherever `OVRSTUB_LOG` points;
+`OVRSTUB_LOG=0` turns the file off). The `[libovr-trace]` lines show which Oculus files,
 events and env vars the game looks for, which is the first place to look when
 a new game doesn't reach its menu.
 
@@ -142,7 +143,8 @@ says `could not get OpenVR interfaces`). `add-to-steam` therefore forces the
 newest numbered Proton you have installed; `--proton-tool` overrides it. A
 newer Proton also upgrades a prefix an older one made, while the reverse can
 fail (Proton 9 failed the signature check in a Proton 10 prefix). Each
-`ovrstub.log` names the Wine/Proton build it ran on, on its second line.
+`ovrstub-<exe name>.log` names the Wine/Proton build it ran on, on its
+second line.
 
 `ovrl launch` runs the game under a bare `proton run`, which is enough to
 reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
