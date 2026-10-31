@@ -706,6 +706,27 @@ def cmd_update_shims(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_organize(args: argparse.Namespace) -> int:
+    """Rename store-id game folders to game names and move them."""
+    from . import library
+    try:
+        token = store.load_token()
+    except store.StoreError:
+        token = None
+    plan = _library_call(library.scan_numbered, args.folder, token)
+    if not plan:
+        print(f"no game folders named by store id in {args.folder}")
+        return 0
+    for e in plan:
+        what = e["problem"] or f"-> {e['target']}"
+        print(f"{e['app_id']}  {e['name'] or '?':<40} {what}")
+    if not args.yes:
+        print("\nNothing moved. Run again with --yes (Steam closed) to move them.")
+        return 0
+    _library_call(library.organize, args.folder, token)
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
     gui.serve(args.port, open_browser=not args.no_browser)
@@ -863,6 +884,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("update-shims", help="copy the current build's shim into "
                                             "every installed game")
     s.set_defaults(func=cmd_update_shims)
+
+    s = sub.add_parser("organize", help="rename game folders named by store id "
+                                        "to game names and move them into games_dir")
+    s.add_argument("folder", help="folder holding them, e.g. ~/Games/\"VR Oculus\"")
+    s.add_argument("--yes", action="store_true",
+                   help="really move (Steam closed); without it, only show the plan")
+    s.set_defaults(func=cmd_organize)
 
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)

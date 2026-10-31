@@ -121,7 +121,7 @@ def state() -> dict:
 
 
 # Settings that hold a path, and whether Browse picks a folder or a file.
-PICK = {"games_dir": "dir", "prefix": "dir", "steam_root": "dir",
+PICK = {"games_dir": "dir", "prefix": "dir", "steam_root": "dir", "organize_dir": "dir",
         "real_runtime": "file", "real_platform": "file", "openvr": "file"}
 
 
@@ -197,6 +197,13 @@ def desktop_entry() -> Path:
     return path
 
 
+def _token_or_none() -> str | None:
+    try:
+        return store.load_token()
+    except store.StoreError:
+        return None
+
+
 def _post(path: str, body: dict) -> dict:
     if path == "/api/open":
         game = library.games().get(str(body.get("app_id", "")))
@@ -225,6 +232,14 @@ def _post(path: str, body: dict) -> dict:
     if path == "/api/quit":
         S.say("quitting")
         threading.Thread(target=S.server.shutdown, daemon=True).start()
+        return {"ok": True}
+    if path == "/api/organize/scan":
+        return {"found": library.scan_numbered(str(body.get("folder", "")), _token_or_none())}
+    if path == "/api/organize/run":
+        if cli._steam_running():
+            raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
+        _run("organizing", library.organize, str(body.get("folder", "")),
+             _token_or_none(), S.say)
         return {"ok": True}
     if path == "/api/pick":
         key = str(body.get("key", ""))
@@ -301,6 +316,13 @@ How to get it: see <a href="https://github.com/Breezyslasher/Oculus-PCVR-Linux#d
 <button class="sec" id="upd" onclick="post('/api/update')">Get latest version &amp; update all games</button>
 <button class="sec" onclick="post('/api/update-shims')">Re-copy shim into all games</button></div>
 <p class="mute">“Get latest version” downloads the newest ovrl code from GitHub, rebuilds it, and copies the new shim into every installed game. Meta's genuine DLLs are left alone.</p></div>
+<div class="card"><h2>Organize old downloads</h2>
+<p class="mute">Finds game folders named by store number (like 1016967501697367), renames them to the game's name, moves them into your games folder and updates their Steam shortcuts. Quit Steam first.</p>
+<div class="bar"><input type="text" id="c_organize_dir" placeholder="Folder to scan, e.g. ~/Games/VR Oculus">
+<button class="sec" onclick="browse('organize_dir')">Browse…</button>
+<button class="sec" onclick="scanOrg()">Scan</button>
+<button id="orgrun" onclick="runOrg()" disabled>Rename &amp; move</button></div>
+<table id="org" style="margin-top:8px"></table></div>
 <div class="card"><h2>Settings</h2><p class="mute">games_dir is where downloads go. Browse opens your desktop&rsquo;s file dialog; remember to Save.</p><div class="cfg" id="cfg"></div>
 <div class="bar" style="margin-top:10px"><button onclick="saveCfg()">Save settings</button></div></div>
 <div class="card"><h2>Log</h2><pre id="log"></pre></div>
@@ -339,6 +361,10 @@ function draw(){const s=st;
  document.getElementById("log").textContent=s.log.join("\n");
  if(!cfgDrawn){cfgDrawn=true;document.getElementById("cfg").innerHTML=Object.entries(s.config_keys).map(([k,h])=>
   `<label for="c_${k}">${k}</label><div><div class="bar"><input type="text" id="c_${k}" value="${esc(s.config[k])}">${s.pick[k]?`<button class="sec" onclick="browse('${k}')">Browse…</button>`:""}</div><div class="mute">${esc(h)}</div></div>`).join("")}}
+async function scanOrg(){const f=document.getElementById("c_organize_dir").value;const j=await post("/api/organize/scan",{folder:f});
+ const rows=(j.found||[]);document.getElementById("orgrun").disabled=!rows.some(r=>!r.problem);
+ document.getElementById("org").innerHTML=rows.length?rows.map(r=>`<tr><td>${esc(r.name||"?")}<div class="mute">${esc(r.path)}</div></td><td>${r.problem?`<span class="err">${esc(r.problem)}</span>`:`<span class="mute">→ ${esc(r.target)}</span>`}</td></tr>`).join(""):(j.found?'<tr><td class="mute">No folders named by store number here.</td></tr>':"")}
+async function runOrg(){if(!confirm("Move these games? Steam must be closed."))return;const f=document.getElementById("c_organize_dir").value;await post("/api/organize/run",{folder:f});document.getElementById("orgrun").disabled=true;setTimeout(scanOrg,3000)}
 function saveCfg(){const b={};for(const k in st.config_keys)b[k]=document.getElementById("c_"+k).value;post("/api/config",b)}
 async function poll(){try{st=await (await fetch("/api/state")).json();draw()}catch(e){}}
 document.getElementById("q").oninput=draw;document.getElementById("pconly").onchange=draw;

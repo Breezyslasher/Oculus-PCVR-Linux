@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import threading
 from pathlib import Path
 
@@ -316,3 +317,105 @@ def update_shims(log=print) -> list[str]:
         updated.append(g["name"])
     log(f"updated {len(updated)} game(s)")
     return updated
+
+
+# --- organize old downloads (folders named by store id) ---
+
+def _owned_names(token: str | None) -> dict:
+    """App id -> name from the cached library, refreshed once if needed."""
+    names = {a["id"]: a.get("name", "") for a in cached_library().get("apps", [])}
+    if not names and token:
+        names = {a["id"]: a.get("name", "") for a in refresh_library(token).get("apps", [])}
+    return names
+
+
+def scan_numbered(root: str, token: str | None = None) -> list[dict]:
+    """Game folders under `root` named by store id (e.g. 1016967501697367),
+    with the name each would get and where it would move to."""
+    root_p = Path(root).expanduser()
+    if not root_p.is_dir():
+        raise LibraryError(f"{root_p} is not a folder")
+    cfg = load_config()
+    names = _owned_names(token)
+    found = []
+    for d in sorted(root_p.iterdir()):
+        if not (d.is_dir() and d.name.isdigit() and len(d.name) >= 9):
+            continue
+        name = names.get(d.name, "")
+        if not name and token:
+            try:
+                name, _ = store.app_builds(token, d.name)
+            except store.StoreError:
+                name = ""
+        entry = {"app_id": d.name, "path": str(d), "name": name, "target": "", "problem": ""}
+        if not name:
+            entry["problem"] = "name unknown (log in, or refresh the library)"
+        else:
+            target = Path(cfg["games_dir"]).expanduser() / _folder_name(name, d.name)
+            entry["target"] = str(target)
+            if target.exists():
+                entry["problem"] = f"{target} already exists"
+        found.append(entry)
+    return found
+
+
+def organize(root: str, token: str | None = None, log=print) -> list[str]:
+    """Rename numbered game folders under `root` to game names, move them
+    into games_dir, repoint their Steam shortcuts and register them.
+
+    Steam must be closed (it rewrites shortcuts.vdf on exit). Shortcuts are
+    checked before anything moves and written once after, keeping each
+    entry's appid so its Proton setting survives.
+    """
+    if cli._steam_running():
+        raise LibraryError("quit Steam fully first (Steam > Exit): its shortcuts "
+                           "will be updated to the new folders")
+    plan = [e for e in scan_numbered(root, token) if not e["problem"]]
+    if not plan:
+        log("nothing to move")
+        return []
+    cfg = load_config()
+    Path(cfg["games_dir"]).expanduser().mkdir(parents=True, exist_ok=True)
+
+    shortcuts = top = None
+    try:
+        _, user_dir = _call(cli.steam_user_dir, cfg.get("steam_root"), cfg.get("steam_user"))
+        shortcuts = user_dir / "config" / "shortcuts.vdf"
+    except LibraryError as e:
+        log(f"Steam shortcuts won't be updated: {e}")
+    if shortcuts and shortcuts.is_file():
+        orig = shortcuts.read_bytes()
+        top = cli.steam.parse_shortcuts(orig)
+        if cli.steam.dump_shortcuts(top) != orig:
+            raise LibraryError(f"refusing to edit {shortcuts}: it doesn't round-trip "
+                               "through our parser")
+
+    moved = []
+    for e in plan:
+        src, dst = Path(e["path"]), Path(e["target"])
+        log(f"moving {src} -> {dst}")
+        shutil.move(str(src), str(dst))
+        in_steam = bool(top and cli.steam.rewrite_shortcut_paths(top, str(src), str(dst)))
+        if in_steam:
+            log(f"  updated its Steam shortcut")
+        try:
+            manifest = json.loads((dst / "manifest.json").read_text())
+        except (OSError, ValueError):
+            manifest = {}
+        try:
+            exe, hmd, engine = detect_exe(dst, manifest)
+        except LibraryError as err:
+            log(f"  not registered: {err}")
+        else:
+            _save_game(e["app_id"], {
+                "app_id": e["app_id"], "name": e["name"], "build_id": "",
+                "version": "", "dir": str(dst), "exe": str(exe), "hmd": hmd,
+                "engine": engine, "in_steam": in_steam})
+        moved.append(e["name"])
+
+    if top is not None:
+        shutil.copy2(shortcuts, shortcuts.with_suffix(".vdf.ovrl-bak"))
+        shortcuts.write_bytes(cli.steam.dump_shortcuts(top))
+        log(f"wrote {shortcuts}")
+    log(f"moved {len(moved)} game(s)")
+    return moved

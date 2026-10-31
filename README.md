@@ -240,6 +240,13 @@ python3 -m ovrl add-queued        # after quitting Steam
 python3 -m ovrl update-shims      # after `git pull && make`
 ```
 
+Games downloaded earlier into folders named by store number (e.g.
+`~/Games/VR Oculus/1016967501697367`) can be tidied up: **Organize old
+downloads** on the page (or `python3 -m ovrl organize ~/Games/"VR Oculus"`,
+then again with `--yes`) renames each to the game's name, moves it into
+`games_dir`, repoints its Steam shortcut (keeping its Proton setting) and adds
+it to the installed list. Quit Steam first.
+
 Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
 Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
 locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it
