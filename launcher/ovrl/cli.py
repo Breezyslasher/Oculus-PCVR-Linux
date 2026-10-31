@@ -839,11 +839,14 @@ def _date(ts: int) -> str:
 
 
 def cmd_versions(args: argparse.Namespace) -> int:
-    name, builds = store.app_builds(store.load_token(), args.app_id)
+    from . import library
+    token = store.load_token()
+    name, builds = store.app_builds(token, args.app_id)
     print(f"{name or 'App'} ({args.app_id})")
     for b in builds:
         channels = f"  [{', '.join(c for c in b.channels if c)}]" if any(b.channels) else ""
-        print(f"  build {b.id}  version {b.version} (code {b.version_code})"
+        kind = {"pc": "PC", "quest": "Quest"}.get(library.build_kind(token, b.id), "?")
+        print(f"  {kind:<5} build {b.id}  version {b.version} (code {b.version_code})"
               f"  {_date(b.created)}{channels}")
     return 0
 
@@ -856,8 +859,10 @@ def cmd_download(args: argparse.Namespace) -> int:
         name, builds = store.app_builds(token, args.app_id)
         if not builds:
             sys.exit(f"ovrl: {name or args.app_id} has no downloadable builds")
-        live = [b for b in builds if any(c.upper() == "LIVE" for c in b.channels)]
-        chosen = (live or builds)[0]
+        from . import library
+        chosen = library._newest_pc_build(token, builds)
+        if chosen is None:
+            sys.exit(f"ovrl: {name or args.app_id} has no PC build (Quest-only?)")
         build_id = chosen.id
         print(f"{name or args.app_id}: build {chosen.id}, version {chosen.version}")
     if args.dest:

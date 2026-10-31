@@ -140,37 +140,74 @@ def _newest_build(builds: list) -> object | None:
     return (live or builds or [None])[0]
 
 
+def _manifest_kind(m: dict) -> tuple[str, str]:
+    """('pc' | 'quest' | 'other', detail) from a build's manifest."""
+    launch = (m.get("launchFile") or "").lower()
+    files = [f.lower() for f in (m.get("files") or {})]
+    if launch.endswith(".exe") or (not launch and any(f.endswith(".exe") for f in files)):
+        return "pc", m.get("launchFile") or ""
+    if launch.endswith(".apk") or any(f.endswith(".apk") for f in files):
+        return "quest", "Android APK"
+    return "other", f"launch file {launch or 'missing'}"
+
+
+def build_kind(token: str, build_id: str) -> str:
+    """Whether one build is for PC ('pc'), Quest ('quest') or neither.
+
+    Cross-buy apps list their Quest and PC builds under one app id, and the
+    store's version list doesn't say which is which, so ask each build's
+    manifest: a PC build launches a Windows .exe, a Quest build is an APK
+    (the CDN often has no PC manifest for it at all). Builds never change,
+    so answers are cached in build_kinds.json.
+    """
+    with _lock:
+        cache = _read("build_kinds.json")
+    if build_id in cache:
+        return cache[build_id]
+    try:
+        kind, _ = _manifest_kind(fetch_manifest(token, build_id))
+    except store.StoreError:
+        kind = "quest"
+    with _lock:
+        cache = _read("build_kinds.json")
+        cache[build_id] = kind
+        _write("build_kinds.json", cache)
+    return kind
+
+
+def _newest_pc_build(token: str, builds: list) -> object | None:
+    """The newest PC build: LIVE ones first, then any other channel."""
+    live = [b for b in builds if any(c.upper() == "LIVE" for c in b.channels)]
+    rest = [b for b in builds if b not in live]
+    for b in live + rest:
+        if build_kind(token, b.id) == "pc":
+            return b
+    return None
+
+
 def classify(token: str, app_id: str) -> dict:
     """Decide whether an owned app is a PC (Rift) game we can install.
 
-    The entitlement list doesn't say, and Quest and Rift versions of a game
-    have separate IDs. So look at the newest build: a Rift build's manifest
-    names a Windows .exe to launch; a Quest build is an APK (the CDN serves
-    no Rift manifest for it), and system/bundle entries have no builds.
+    The entitlement list doesn't say, Quest and Rift versions of a game often
+    have separate IDs, and cross-buy apps mix both kinds of build under one
+    ID. So look for the newest PC build; failing that, the app is Quest-only
+    (or a system/bundle entry with no builds at all).
     """
     try:
         name, builds = store.app_builds(token, app_id)
     except store.StoreError as e:
         info = {"kind": "other", "reason": str(e)}
     else:
-        b = _newest_build(builds)
-        if b is None:
+        if not builds:
             info = {"kind": "other", "reason": "no downloadable builds"}
         else:
-            info = {"build_id": b.id, "version": b.version}
-            try:
-                m = fetch_manifest(token, b.id)
-            except store.StoreError:
-                info.update(kind="quest", reason="no PC manifest (Quest/Android build)")
+            b = _newest_pc_build(token, builds)
+            if b is not None:
+                info = {"kind": "pc", "build_id": b.id, "version": b.version}
             else:
-                launch = (m.get("launchFile") or "").lower()
-                files = [f.lower() for f in (m.get("files") or {})]
-                if launch.endswith(".exe") or (not launch and any(f.endswith(".exe") for f in files)):
-                    info.update(kind="pc", launch=m.get("launchFile") or "")
-                elif launch.endswith(".apk") or any(f.endswith(".apk") for f in files):
-                    info.update(kind="quest", reason="Android APK")
-                else:
-                    info.update(kind="other", reason=f"launch file {launch or 'missing'}")
+                newest = _newest_build(builds)
+                info = {"kind": "quest", "build_id": newest.id, "version": newest.version,
+                        "reason": "no PC build (Quest/Android only)"}
     _update_cached_app(app_id, **{"kind": None, "reason": None, **info})
     return info
 
@@ -221,13 +258,18 @@ def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
 
 
 def versions(app_id: str, token: str | None = None) -> list[dict]:
-    """Every downloadable build of an app, newest first."""
+    """Every downloadable PC build of an app, newest first (Quest builds of
+    cross-buy apps are left out)."""
+    from concurrent.futures import ThreadPoolExecutor
     token = token or store.load_token()
     _, builds = store.app_builds(token, app_id)
-    newest = _newest_build(builds)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        kinds = list(pool.map(lambda b: build_kind(token, b.id), builds))
+    pc = [b for b, k in zip(builds, kinds) if k == "pc"]
+    default = _newest_pc_build(token, pc)
     return [{"id": b.id, "version": b.version, "code": b.version_code,
              "created": b.created, "channels": [c for c in b.channels if c],
-             "default": newest is not None and b.id == newest.id} for b in builds]
+             "default": default is not None and b.id == default.id} for b in pc]
 
 
 def install(app_id: str, token: str | None = None, on_progress=None,
@@ -245,23 +287,21 @@ def install(app_id: str, token: str | None = None, on_progress=None,
                            "<path to genuine LibOVRRT64_1.dll>`)")
     name, builds = store.app_builds(token, app_id)
     name = name or library_name(app_id, token)
+    if not builds:
+        raise LibraryError(f"{name or app_id} has no downloadable builds")
     if build_id:
         build = next((b for b in builds if b.id == build_id), None)
         if build is None:
             raise LibraryError(f"{name or app_id} has no build {build_id}")
+        if build_kind(token, build.id) != "pc":
+            raise LibraryError(f"build {build_id} of {name or app_id} is a Quest "
+                               "build, not a PC one; pick another version")
     else:
-        build = _newest_build(builds)
-    if build is None:
-        raise LibraryError(f"{name or app_id} has no downloadable builds")
+        build = _newest_pc_build(token, builds)
+        if build is None:
+            raise LibraryError(f"{name or app_id} has no PC build (it looks like a "
+                               "Quest app); pick its Rift version instead")
     log(f"{name}: build {build.id}, version {build.version}")
-    try:
-        manifest_preview = fetch_manifest(token, build.id)
-    except store.StoreError:
-        raise LibraryError(f"{name or app_id} has no PC build (it looks like a "
-                           "Quest app); pick its Rift version instead") from None
-    if not (manifest_preview.get("launchFile") or "").lower().endswith(".exe"):
-        raise LibraryError(f"{name or app_id} isn't a PC game (launch file "
-                           f"{manifest_preview.get('launchFile')!r})")
 
     dest = Path(cfg["games_dir"]).expanduser() / _folder_name(name, app_id)
     log(f"downloading to {dest}")
