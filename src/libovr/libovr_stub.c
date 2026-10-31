@@ -335,6 +335,47 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
     return s;
 }
 
+/* Poses for a list of tracked devices (ovrTrackedDeviceType): HMD 0x1,
+ * LTouch 0x2, RTouch 0x4, Touch 0x6 (both; answered as the left one),
+ * Object0-3 0x10-0x80 (none here). Newer SDKs read the controllers through
+ * this instead of ovr_GetTrackingState's HandPoses; failing it leaves the
+ * game's hands resting at the player's sides. */
+EXPORT ovrResult ovr_GetDevicePoses(ovrSession session, const int *deviceTypes,
+                                    int deviceCount, double absTime,
+                                    ovrPoseStatef *outDevicePoses)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    if (deviceCount < 0 || (deviceCount && (!deviceTypes || !outDevicePoses)))
+        return set_error(ovrError_InvalidParameter, "bad device list");
+    ovrTrackingState ts = ovr_GetTrackingState(session, absTime, ovrFalse);
+    for (int i = 0; i < deviceCount; i++) {
+        ovrPoseStatef *out = &outDevicePoses[i];
+        switch (deviceTypes[i]) {
+        case 0x1:
+            *out = ts.HeadPose;
+            break;
+        case 0x2:
+        case 0x6:
+            *out = ts.HandPoses[0];
+            break;
+        case 0x4:
+            *out = ts.HandPoses[1];
+            break;
+        default:
+            memset(out, 0, sizeof(*out));
+            out->ThePose.Orientation.w = 1.0f;
+            break;
+        }
+    }
+    static LONG logged;
+    if (!InterlockedExchange(&logged, 1))
+        LOG("ovr_GetDevicePoses: %d device(s), first type 0x%x", deviceCount,
+            deviceCount ? deviceTypes[0] : 0);
+    return ovrSuccess;
+}
+
 /* Exports some SDK versions require in their symbol table (Meta's loader
  * unloads the runtime if any is missing). Minimal, safe behavior. */
 
@@ -677,7 +718,6 @@ EXPORT ovrResult ovr_SpecifyTrackingOrigin(ovrSession session, ovrPosef originPo
     vr_backend_specify_origin(originPose);
     return ovrSuccess;
 }
-NO_SESSION(ovr_GetDevicePoses)
 NO_SESSION(ovr_SetControllerVibration)
 NO_SESSION(ovr_SubmitControllerVibration)
 NO_SESSION(ovr_GetControllerVibrationState)
