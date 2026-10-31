@@ -241,6 +241,11 @@ def _post(path: str, body: dict) -> dict:
         _run("organizing", library.organize, str(body.get("folder", "")),
              _token_or_none(), S.say)
         return {"ok": True}
+    if path == "/api/set-proton":
+        if cli._steam_running():
+            raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
+        _run("setting Proton", library.set_proton, None, S.say)
+        return {"ok": True}
     if path == "/api/pick":
         key = str(body.get("key", ""))
         if key not in PICK:
@@ -314,8 +319,9 @@ How to get it: see <a href="https://github.com/Breezyslasher/Oculus-PCVR-Linux#d
 <div class="bar" style="margin-top:10px">
 <button id="addq" onclick="post('/api/add-to-steam')">Add queued games to Steam</button>
 <button class="sec" id="upd" onclick="post('/api/update')">Get latest version &amp; update all games</button>
-<button class="sec" onclick="post('/api/update-shims')">Re-copy shim into all games</button></div>
-<p class="mute">“Get latest version” downloads the newest ovrl code from GitHub, rebuilds it, and copies the new shim into every installed game. Meta's genuine DLLs are left alone.</p></div>
+<button class="sec" onclick="post('/api/update-shims')">Re-copy shim into all games</button>
+<button class="sec" onclick="post('/api/set-proton')">Set Proton for all games</button></div>
+<p class="mute">“Get latest version” downloads the newest ovrl code from GitHub, rebuilds it, and copies the new shim into every installed game. Meta's genuine DLLs are left alone. “Set Proton for all games” sets every game added through ovrl to the Proton chosen in Steam's settings (or the proton_tool setting below); quit Steam first.</p></div>
 <div class="card"><h2>Organize old downloads</h2>
 <p class="mute">Finds game folders named by store number (like 1016967501697367), renames them to the game's name, moves them into your games folder and updates their Steam shortcuts. Quit Steam first.</p>
 <div class="bar"><input type="text" id="c_organize_dir" placeholder="Folder to scan, e.g. ~/Games/VR Oculus">

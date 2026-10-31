@@ -299,6 +299,19 @@ def set_compat_tool(root: dict, appid: int, tool: str) -> None:
     node[str(appid)] = {"name": tool, "config": "", "priority": "250"}
 
 
+def default_compat_tool(root: dict) -> str | None:
+    """The Proton the user picked for "all other titles" in Steam's settings
+    (Steam stores it as the mapping for app id 0)."""
+    node = root
+    for part in _COMPAT_PATH:
+        node = _descend(node, part, create=False)
+        if node is None:
+            return None
+    m = node.get("0")
+    name = m.get("name") if isinstance(m, dict) else None
+    return name or None
+
+
 def compat_mappings(root: dict) -> list[dict]:
     """All per-app compat tool entries in config.vdf."""
     node = root

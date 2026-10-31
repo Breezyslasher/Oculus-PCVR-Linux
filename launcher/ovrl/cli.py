@@ -433,6 +433,50 @@ def newest_proton_tool(root: Path) -> str | None:
     return f"proton_{best}" if best else None
 
 
+def steam_default_proton(root: Path, cfg: dict) -> str | None:
+    """The Proton to force for our shortcuts: the one chosen in Steam's
+    settings for all other titles, else the newest numbered one installed.
+
+    Our shortcuts get an explicit per-game mapping (non-Steam games need
+    one), so without this they would ignore that setting.
+    """
+    return steam.default_compat_tool(cfg) or newest_proton_tool(root)
+
+
+def set_proton_for_shortcuts(tool: str | None = None, steam_root: str | None = None,
+                             steam_user: str | None = None, log=print) -> list[str]:
+    """Set the Proton of every Steam shortcut that launches through our
+    injector (default: Steam's default Proton). Steam must be closed."""
+    root, user_dir = steam_user_dir(steam_root, steam_user)
+    if _steam_running():
+        sys.exit("ovrl: Steam is running; quit it fully first (it overwrites its "
+                 "config on exit, which would discard this change)")
+    shortcuts = user_dir / "config" / "shortcuts.vdf"
+    config = root / "config" / "config.vdf"
+    if not shortcuts.is_file() or not config.is_file():
+        sys.exit("ovrl: no Steam shortcuts or config found")
+    cfg = steam.parse_text_vdf(config.read_text(encoding="utf-8"))
+    if steam.parse_text_vdf(steam.dump_text_vdf(cfg)) != cfg:
+        sys.exit(f"ovrl: refusing to edit {config}: it doesn't round-trip through our parser")
+    tool = tool or steam_default_proton(root, cfg)
+    if not tool:
+        sys.exit("ovrl: no Proton found; pass one, e.g. proton_11")
+    top = steam.parse_shortcuts(shortcuts.read_bytes())
+    names = []
+    for item in steam.shortcuts_map(top):
+        entry = item[2]
+        exe = steam._find(entry, "Exe") or ""
+        appid = steam._find(entry, "appid")
+        if INJECTOR.lower() in exe.lower() and isinstance(appid, int):
+            steam.set_compat_tool(cfg, appid & 0xFFFFFFFF, tool)
+            names.append(steam._find(entry, "AppName") or "?")
+    if names:
+        shutil.copy2(config, config.with_suffix(".vdf.ovrl-bak"))
+        config.write_text(steam.dump_text_vdf(cfg), encoding="utf-8")
+    log(f"set {tool} for {len(names)} game(s): {', '.join(names) or 'none'}")
+    return names
+
+
 def _prefix_proton_tool(prefix: Path | None, cfg: dict) -> str | None:
     """The compat tool matching the Proton that created `prefix`, if known.
 
@@ -537,7 +581,7 @@ def add_shortcuts(games: list[dict], prefix: str | None = None,
         if steam.parse_text_vdf(steam.dump_text_vdf(cfg)) != cfg:
             sys.exit(f"ovrl: refusing to edit {config}: it doesn't round-trip "
                      "through our parser")
-        tool = proton_tool or newest_proton_tool(root) \
+        tool = proton_tool or steam_default_proton(root, cfg) \
             or _prefix_proton_tool(pfx, cfg) or steam.detect_proton_tool(cfg)
 
     if shortcuts.is_file():
@@ -727,6 +771,13 @@ def cmd_organize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_proton(args: argparse.Namespace) -> int:
+    from . import library
+    cfg = library.load_config()
+    set_proton_for_shortcuts(args.tool, cfg.get("steam_root"), cfg.get("steam_user"))
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
     gui.serve(args.port, open_browser=not args.no_browser)
@@ -834,8 +885,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="value for the game's -hmd arg (default: auto, as "
                         "for steam-setup)")
     s.add_argument("--proton-tool", metavar="NAME",
-                   help="compat tool name, e.g. proton_11 (default: the newest "
-                        "numbered Proton installed)")
+                   help="compat tool name, e.g. proton_11 (default: the one "
+                        "chosen in Steam's settings for all other titles)")
     s.add_argument("--prefix", metavar="COMPATDATA",
                    help="Proton prefix (compatdata dir) to run in instead of the "
                         "fresh one Steam would create, e.g. one set up with "
@@ -891,6 +942,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--yes", action="store_true",
                    help="really move (Steam closed); without it, only show the plan")
     s.set_defaults(func=cmd_organize)
+
+    s = sub.add_parser("set-proton", help="set the Proton of every game added "
+                                          "through ovrl (Steam closed)")
+    s.add_argument("tool", nargs="?", help="e.g. proton_11 (default: the one "
+                   "chosen in Steam's settings for all other titles)")
+    s.set_defaults(func=cmd_set_proton)
 
     s = sub.add_parser("gui", help="open the library UI in your browser")
     s.add_argument("--port", type=int, default=8765)

@@ -419,3 +419,10 @@ def organize(root: str, token: str | None = None, log=print) -> list[str]:
         log(f"wrote {shortcuts}")
     log(f"moved {len(moved)} game(s)")
     return moved
+
+
+def set_proton(tool: str | None = None, log=print) -> list[str]:
+    """Set the Proton of every game added through ovrl (Steam closed)."""
+    cfg = load_config()
+    return _call(cli.set_proton_for_shortcuts, tool or cfg.get("proton_tool"),
+                 cfg.get("steam_root"), cfg.get("steam_user"), log=log)

@@ -140,7 +140,11 @@ Use a recent Proton (Proton 11 works). Proton's VR bridge only offers the
 SteamVR interface versions that existed when it was built, so with an older
 Proton the game loads the shim but SteamVR hands back no display (the log
 says `could not get OpenVR interfaces`). `add-to-steam` therefore forces the
-newest numbered Proton you have installed; `--proton-tool` overrides it. A
+Proton chosen in Steam's settings for "all other titles" (else the newest
+numbered one installed); `--proton-tool` overrides it.
+`python3 -m ovrl set-proton` (or **Set Proton for all games** on the page)
+re-applies that to every game added through ovrl, e.g. after changing
+Steam's default. A
 newer Proton also upgrades a prefix an older one made, while the reverse can
 fail (Proton 9 failed the signature check in a Proton 10 prefix). Each
 `ovrstub-<exe name>.log` names the Wine/Proton build it ran on, on its
