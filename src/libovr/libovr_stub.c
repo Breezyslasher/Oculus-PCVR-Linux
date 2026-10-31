@@ -1240,14 +1240,52 @@ EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
     return ovr_SubmitFrame(session, frameIndex, viewScaleDesc, layerPtrList, layerCount);
 }
 
+/* Split frame loop (WaitToBeginFrame / BeginFrame / EndFrame). Engines
+ * that use it (Unreal 4.2x, newer Unity) pipeline: the game thread waits to
+ * begin frame N+1 while the render thread is still ending frame N. Doing
+ * SteamVR's WaitGetPoses in WaitToBeginFrame put it between the render
+ * thread's submissions, so frames missed their slot and ran at ~30 fps
+ * (Spider-Man: Far From Home, Bigscreen: a quarter of waits timed out).
+ * As the single-call ovr_SubmitFrame path (which paces fine) and Revive do:
+ * EndFrame submits and then waits for the compositor on the render thread,
+ * and WaitToBeginFrame only waits until the previous frame has ended (one
+ * frame in flight, as the Oculus runtime allows). */
+static SRWLOCK g_frame_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE g_frame_cv = CONDITION_VARIABLE_INIT;
+static LONG64 g_frames_begun, g_frames_ended;
+
+static void frame_ended(void)
+{
+    AcquireSRWLockExclusive(&g_frame_lock);
+    g_frames_ended++;
+    if (g_frames_begun < g_frames_ended)
+        g_frames_begun = g_frames_ended;
+    ReleaseSRWLockExclusive(&g_frame_lock);
+    WakeAllConditionVariable(&g_frame_cv);
+}
+
 EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
 {
     TRACE_FIRST();
     (void)frameIndex;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    return begin_frame_tracked() ? ovrSuccess
-        : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
+    /* The compositor's first frame slot, so the first poses are current. */
+    static LONG waited_once;
+    if (!InterlockedExchange(&waited_once, 1))
+        begin_frame_tracked();
+    AcquireSRWLockExclusive(&g_frame_lock);
+    while (g_frames_begun - g_frames_ended >= 1) {
+        /* A game that begins a frame and never ends it mustn't stall us:
+         * give up after 100 ms and start counting afresh. */
+        if (!SleepConditionVariableSRW(&g_frame_cv, &g_frame_lock, 100, 0)) {
+            g_frames_begun = g_frames_ended;
+            break;
+        }
+    }
+    g_frames_begun++;
+    ReleaseSRWLockExclusive(&g_frame_lock);
+    return ovrSuccess;
 }
 
 EXPORT ovrResult ovr_BeginFrame(ovrSession session, long long frameIndex)
@@ -1268,10 +1306,13 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
     (void)frameIndex; (void)viewScaleDesc;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
+    /* Split frame model: submit, then wait for the compositor's next frame
+     * here on the render thread (see ovr_WaitToBeginFrame). */
     InterlockedIncrement(&g_in_submit);
     ovrResult r = submit_layers(layerPtrList, layerCount);
     InterlockedDecrement(&g_in_submit);
+    begin_frame_tracked();
+    frame_ended();
     return r;
 }
 
