@@ -775,7 +775,7 @@ def _library_call(fn, *a, **kw):
 
 def cmd_install(args: argparse.Namespace) -> int:
     from . import library
-    game = _library_call(library.install, args.app_id)
+    game = _library_call(library.install, args.app_id, build_id=args.build_id)
     print(f"\n{game['name']} installed in {game['dir']}")
     return 0
 
@@ -976,6 +976,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("install", help="download a PC game, stage it and add it "
                                        "to Steam in one step")
     s.add_argument("app_id")
+    s.add_argument("--build-id", help="a specific version (see `ovrl versions`; "
+                                      "default: the newest LIVE build)")
     s.set_defaults(func=cmd_install)
 
     s = sub.add_parser("add-queued", help="add installed games not yet in Steam "

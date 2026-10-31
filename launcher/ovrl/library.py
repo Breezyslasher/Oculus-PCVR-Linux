@@ -220,9 +220,20 @@ def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
     return exe, "OculusRift", "unknown"
 
 
+def versions(app_id: str, token: str | None = None) -> list[dict]:
+    """Every downloadable build of an app, newest first."""
+    token = token or store.load_token()
+    _, builds = store.app_builds(token, app_id)
+    newest = _newest_build(builds)
+    return [{"id": b.id, "version": b.version, "code": b.version_code,
+             "created": b.created, "channels": [c for c in b.channels if c],
+             "default": newest is not None and b.id == newest.id} for b in builds]
+
+
 def install(app_id: str, token: str | None = None, on_progress=None,
-            log=print) -> dict:
-    """Download the newest build of a PC app, stage it and add it to Steam.
+            log=print, build_id: str | None = None) -> dict:
+    """Download a build of a PC app (default: the newest LIVE one), stage it
+    and add it to Steam.
 
     If Steam is running the game is queued; `add_queued()` (or the UI's
     "Add queued games to Steam") adds every queued game once Steam is closed.
@@ -234,7 +245,12 @@ def install(app_id: str, token: str | None = None, on_progress=None,
                            "<path to genuine LibOVRRT64_1.dll>`)")
     name, builds = store.app_builds(token, app_id)
     name = name or library_name(app_id, token)
-    build = _newest_build(builds)
+    if build_id:
+        build = next((b for b in builds if b.id == build_id), None)
+        if build is None:
+            raise LibraryError(f"{name or app_id} has no build {build_id}")
+    else:
+        build = _newest_build(builds)
     if build is None:
         raise LibraryError(f"{name or app_id} has no downloadable builds")
     log(f"{name}: build {build.id}, version {build.version}")

@@ -257,6 +257,12 @@ logging in fetches it once and ovrl writes it to `ovrstub_user.ini` beside
 each game's shim (no token or password goes in it). `python3 -m ovrl
 identity` re-applies it to every game.
 
+To install an older version (say the newest one doesn't work), press
+**Versions…** next to a game, pick one from the list (each shows its date and
+release channel, and which one is installed) and press Install. From the
+terminal: `python3 -m ovrl versions <id>` lists them and
+`python3 -m ovrl install <id> --build-id <build>` installs one.
+
 Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
 Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
 locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it
