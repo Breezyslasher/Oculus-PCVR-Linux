@@ -335,6 +335,47 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
     return s;
 }
 
+/* Poses for a list of tracked devices (ovrTrackedDeviceType): HMD 0x1,
+ * LTouch 0x2, RTouch 0x4, Touch 0x6 (both; answered as the left one),
+ * Object0-3 0x10-0x80 (none here). Newer SDKs read the controllers through
+ * this instead of ovr_GetTrackingState's HandPoses; failing it leaves the
+ * game's hands resting at the player's sides. */
+EXPORT ovrResult ovr_GetDevicePoses(ovrSession session, const int *deviceTypes,
+                                    int deviceCount, double absTime,
+                                    ovrPoseStatef *outDevicePoses)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    if (deviceCount < 0 || (deviceCount && (!deviceTypes || !outDevicePoses)))
+        return set_error(ovrError_InvalidParameter, "bad device list");
+    ovrTrackingState ts = ovr_GetTrackingState(session, absTime, ovrFalse);
+    for (int i = 0; i < deviceCount; i++) {
+        ovrPoseStatef *out = &outDevicePoses[i];
+        switch (deviceTypes[i]) {
+        case 0x1:
+            *out = ts.HeadPose;
+            break;
+        case 0x2:
+        case 0x6:
+            *out = ts.HandPoses[0];
+            break;
+        case 0x4:
+            *out = ts.HandPoses[1];
+            break;
+        default:
+            memset(out, 0, sizeof(*out));
+            out->ThePose.Orientation.w = 1.0f;
+            break;
+        }
+    }
+    static LONG logged;
+    if (!InterlockedExchange(&logged, 1))
+        LOG("ovr_GetDevicePoses: %d device(s), first type 0x%x", deviceCount,
+            deviceCount ? deviceTypes[0] : 0);
+    return ovrSuccess;
+}
+
 /* Exports some SDK versions require in their symbol table (Meta's loader
  * unloads the runtime if any is missing). Minimal, safe behavior. */
 
@@ -677,7 +718,6 @@ EXPORT ovrResult ovr_SpecifyTrackingOrigin(ovrSession session, ovrPosef originPo
     vr_backend_specify_origin(originPose);
     return ovrSuccess;
 }
-NO_SESSION(ovr_GetDevicePoses)
 NO_SESSION(ovr_SetControllerVibration)
 NO_SESSION(ovr_SubmitControllerVibration)
 NO_SESSION(ovr_GetControllerVibrationState)
@@ -689,11 +729,6 @@ NO_SESSION(ovr_GetBoundaryGeometry)
 NO_SESSION(ovr_GetBoundaryDimensions)
 NO_SESSION(ovr_GetBoundaryVisible)
 NO_SESSION(ovr_RequestBoundaryVisible)
-NO_SESSION(ovr_CreateTextureSwapChainGL)
-NO_SESSION(ovr_GetTextureSwapChainBufferGL)
-NO_SESSION(ovr_CreateMirrorTextureGL)
-NO_SESSION(ovr_CreateMirrorTextureWithOptionsGL)
-NO_SESSION(ovr_GetMirrorTextureBufferGL)
 NO_SESSION(ovr_GetPerfStats)
 NO_SESSION(ovr_ResetPerfStats)
 
@@ -721,6 +756,94 @@ EXPORT ovrResult ovr_CreateTextureSwapChainDX(ovrSession session, void *d3dDevic
     }
     LOG("  -> chain %p, %d buffers", (void *)c, swapchain_d3d_length(c));
     *out = c;
+    return ovrSuccess;
+}
+
+/* ---- OpenGL swap chains and mirror (Google Earth VR) --------------------- */
+
+EXPORT ovrResult ovr_CreateTextureSwapChainGL(ovrSession session,
+                                              const ovrTextureSwapChainDesc *desc,
+                                              ovrTextureSwapChain *out)
+{
+    TRACE_FIRST();
+    if (out)
+        *out = NULL;
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    if (!desc || !out)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    LOG("ovr_CreateTextureSwapChainGL(type=%d fmt=%d %dx%d array=%d mips=%d "
+        "samples=%d static=%d misc=0x%x bind=0x%x)", desc->Type, desc->Format,
+        desc->Width, desc->Height, desc->ArraySize, desc->MipLevels,
+        desc->SampleCount, desc->StaticImage, desc->MiscFlags, desc->BindFlags);
+    ovrTextureSwapChain c = swapchain_gl_create(desc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "GL swap chain creation failed");
+    *out = c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_GetTextureSwapChainBufferGL(ovrSession session,
+                                                 ovrTextureSwapChain chain, int index,
+                                                 unsigned *out_TexId)
+{
+    TRACE_FIRST();
+    (void)session;
+    if (!chain || !out_TexId)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    unsigned tex = swapchain_gl_buffer(chain, index);
+    if (!tex)
+        return set_error(ovrError_InvalidParameter, "bad GL swap chain buffer");
+    *out_TexId = tex;
+    return ovrSuccess;
+}
+
+/* As with D3D, the mirror is only a texture the game can show on the
+ * desktop; nothing is drawn into it. */
+EXPORT ovrResult ovr_CreateMirrorTextureGL(ovrSession session,
+                                           const ovrMirrorTextureDesc *desc,
+                                           ovrMirrorTexture *out)
+{
+    TRACE_FIRST();
+    if (out)
+        *out = NULL;
+    if (session != &g_hmd || !desc || !out)
+        return set_error(ovrError_InvalidParameter, "mirror: bad arg");
+    ovrTextureSwapChainDesc sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.Format = desc->Format;
+    sc.Width = desc->Width;
+    sc.Height = desc->Height;
+    sc.ArraySize = 1;
+    sc.MipLevels = 1;
+    sc.SampleCount = 1;
+    sc.StaticImage = ovrTrue;
+    ovrTextureSwapChain c = swapchain_gl_create(&sc);
+    if (!c)
+        return set_error(ovrError_RuntimeException, "GL mirror creation failed");
+    *out = (ovrMirrorTexture)c;
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_CreateMirrorTextureWithOptionsGL(ovrSession session,
+                                                      const ovrMirrorTextureDesc *desc,
+                                                      ovrMirrorTexture *out)
+{
+    TRACE_FIRST();
+    return ovr_CreateMirrorTextureGL(session, desc, out);
+}
+
+EXPORT ovrResult ovr_GetMirrorTextureBufferGL(ovrSession session, ovrMirrorTexture mirror,
+                                              unsigned *out_TexId)
+{
+    TRACE_FIRST();
+    (void)session;
+    if (!mirror || !out_TexId)
+        return set_error(ovrError_InvalidParameter, "null arg");
+    unsigned tex = swapchain_gl_buffer((ovrTextureSwapChain)mirror, 0);
+    if (!tex)
+        return set_error(ovrError_InvalidParameter, "bad GL mirror");
+    *out_TexId = tex;
     return ovrSuccess;
 }
 
@@ -990,15 +1113,25 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
             /* ovrLayerFlag_TextureOriginAtBottomLeft (Unity and GL games):
              * the viewport is measured from the bottom and the image is
              * stored bottom-up. Mirroring v both maps the viewport and, as
-             * vMin > vMax, has the compositor flip the image upright. */
-            if (h->Flags & 0x2) {
+             * vMin > vMax, has the compositor flip the image upright.
+             * OpenGL textures are bottom-up by nature and the compositor
+             * reads them that way, so GL chains skip this (the flag is how
+             * LibOVR's GL samples say "OpenGL"); OVRSTUB_GL_FLIP=1 flips
+             * them anyway, in case a game's image comes out upside down. */
+            int gl = swapchain_is_gl(chain);
+            static int gl_flip = -1;
+            if (gl_flip < 0) {
+                const char *v = getenv("OVRSTUB_GL_FLIP");
+                gl_flip = v && *v == '1';
+            }
+            if (gl ? gl_flip : (h->Flags & 0x2) != 0) {
                 vMin = 1.0f - vMin;
                 vMax = 1.0f - vMax;
             }
             /* EyeMatrix layers keep their RenderPose elsewhere; only use it
              * from EyeFov / EyeFovDepth. */
             const ovrPosef *pose = h->Type != 5 ? &l->RenderPose[eye] : NULL;
-            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax, pose))
+            if (vr_backend_submit_eye((ovrEyeType)eye, tex, gl, uMin, vMin, uMax, vMax, pose))
                 submitted++;
         }
     }

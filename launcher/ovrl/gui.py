@@ -60,7 +60,7 @@ def _run(label: str, fn, *args):
     S.misc.submit(task)
 
 
-def _install(app_id: str) -> None:
+def _install(app_id: str, build_id: str | None = None) -> None:
     job = S.jobs[app_id]
 
     def progress(done, total):
@@ -68,7 +68,7 @@ def _install(app_id: str) -> None:
 
     job["status"] = "downloading"
     try:
-        library.install(app_id, on_progress=progress, log=S.say)
+        library.install(app_id, on_progress=progress, log=S.say, build_id=build_id)
         job["status"] = "done"
     except (library.LibraryError, store.StoreError, OSError) as e:
         job.update(status="error", error=str(e))
@@ -157,6 +157,10 @@ def _login(raw: str) -> None:
     store.save_token(token)
     S.user = user.get("alias") or user.get("display_name") or user.get("id")
     S.say(f"logged in as {S.user}")
+    try:
+        library.apply_identity(token, log=S.say)
+    except library.LibraryError as e:
+        S.say(f"identity not written: {e}")
 
 
 def _shell(cmd: list[str]) -> None:
@@ -241,6 +245,9 @@ def _post(path: str, body: dict) -> dict:
         _run("organizing", library.organize, str(body.get("folder", "")),
              _token_or_none(), S.say)
         return {"ok": True}
+    if path == "/api/get-runtime":
+        _run("getting Meta's runtime", library.get_meta_runtime, None, True, S.say)
+        return {"ok": True}
     if path == "/api/set-proton":
         if cli._steam_running():
             raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
@@ -252,6 +259,11 @@ def _post(path: str, body: dict) -> dict:
             raise library.LibraryError("bad setting")
         return {"path": pick_path(PICK[key], str(body.get("start", "")),
                                   f"Choose {key.replace('_', ' ')}")}
+    if path == "/api/versions":
+        app_id = str(body.get("app_id", ""))
+        if not app_id.isdigit():
+            raise library.LibraryError("bad app id")
+        return {"versions": library.versions(app_id)}
     if path == "/api/refresh":
         _run("refreshing library", _refresh)
     elif path == "/api/check":
@@ -262,8 +274,11 @@ def _post(path: str, body: dict) -> dict:
             raise library.LibraryError("bad app id")
         if S.jobs.get(app_id, {}).get("status") in ("queued", "downloading"):
             return {"ok": True}
+        build_id = str(body.get("build_id") or "") or None
+        if build_id and not build_id.isdigit():
+            raise library.LibraryError("bad build id")
         S.jobs[app_id] = {"status": "queued", "done": 0, "total": 0}
-        S.installs.submit(_install, app_id)
+        S.installs.submit(_install, app_id, build_id)
     elif path == "/api/add-to-steam":
         if cli._steam_running():
             raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
@@ -291,6 +306,7 @@ h1{font-size:20px;margin:4px 0 12px} h2{font-size:15px;margin:0 0 8px}
 button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
 button.sec{background:transparent;color:var(--acc);border:1px solid var(--line)}
 button:disabled{opacity:.45;cursor:default}
+select{padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;max-width:320px}
 input[type=text],input[type=password]{flex:1;min-width:160px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
 table{width:100%;border-collapse:collapse} td{padding:7px 6px;border-top:1px solid var(--line);vertical-align:middle}
 .badge{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid currentColor;white-space:nowrap}
@@ -329,6 +345,9 @@ How to get it: see <a href="https://github.com/Breezyslasher/Oculus-PCVR-Linux#d
 <button class="sec" onclick="scanOrg()">Scan</button>
 <button id="orgrun" onclick="runOrg()" disabled>Rename &amp; move</button></div>
 <table id="org" style="margin-top:8px"></table></div>
+<div class="card"><h2>Meta runtime files</h2>
+<p class="mute">Games check that Meta's genuine LibOVRRT64_1.dll (and for some, LibOVRPlatform64_1.dll) sits beside them. This downloads both straight from Meta with your login, as Meta's own PC installer does (only those two files), sets them in Settings and puts them beside your games. No Windows PC needed.</p>
+<div class="bar"><button onclick="post('/api/get-runtime')">Get Meta runtime files</button></div></div>
 <div class="card"><h2>Settings</h2><p class="mute">games_dir is where downloads go. Browse opens your desktop&rsquo;s file dialog; remember to Save.</p><div class="cfg" id="cfg"></div>
 <div class="bar" style="margin-top:10px"><button onclick="saveCfg()">Save settings</button></div></div>
 <div class="card"><h2>Log</h2><pre id="log"></pre></div>
@@ -342,21 +361,23 @@ function mb(n){return (n/1048576).toFixed(0)+" MB"}
 function badge(a){if(!a.kind)return '<span class="badge unk">checking…</span>';
  if(a.kind=="pc")return '<span class="badge pc">PC</span>';
  return `<span class="badge ${a.kind}" title="${esc(a.reason)}">${a.kind=="quest"?"Quest":"not a game"}</span>`}
+const vers={},sel={};
+async function loadVers(id){const j=await post("/api/versions",{app_id:id});if(j.versions){vers[id]=j.versions;const d=j.versions.find(v=>v.default);if(d)sel[id]=d.id;draw()}}
 function draw(){const s=st;
  document.getElementById("status").innerHTML=`<div class="bar">
  ${s.logged_in?(s.user?`<span>Logged in as <b>${esc(s.user)}</b> <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`:`<span>Logged in <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`):'<span class="err">Not logged in: paste your token below.</span>'}
- ${s.config.real_runtime?"":'<span class="err">Set the genuine LibOVRRT64_1.dll path in Settings below.</span>'}
+ ${s.config.real_runtime?"":'<span class="err">Meta runtime files missing: press “Get Meta runtime files” below.</span>'}
  <span>Steam: ${s.steam_running?'<b class="unk">running</b> (games get queued; quit Steam to add them)':'<b class="pc">closed</b>'}</span>
  ${s.queued.length?`<span>Queued for Steam: ${esc(s.queued.join(", "))}</span>`:""}
  ${s.busy?`<span class="mute">${esc(s.busy)}…</span>`:""}</div>`;
  const q=document.getElementById("q").value.toLowerCase(),pc=document.getElementById("pconly").checked;
  let rows=s.apps.filter(a=>a.name.toLowerCase().includes(q)&&(!pc||a.kind=="pc"||!a.kind));
- document.getElementById("apps").innerHTML=rows.length?rows.map(a=>{const j=s.jobs[a.id],g=s.installed[a.id];let act;
+ const ae=document.activeElement;if(!(ae&&ae.tagName=="SELECT"&&ae.closest("#apps")))document.getElementById("apps").innerHTML=rows.length?rows.map(a=>{const j=s.jobs[a.id],g=s.installed[a.id];let act;
   if(j&&(j.status=="downloading"||j.status=="queued"))act=j.total?`<progress value="${j.done}" max="${j.total}"></progress> <span class="mute">${mb(j.done)} / ${mb(j.total)}</span>`:`<span class="mute">${j.status}…</span>`;
-  else if(a.kind=="pc")act=`<button onclick="post('/api/install',{app_id:'${a.id}'})">${g?"Reinstall":"Install"}</button>`;
+  else if(a.kind=="pc")act=(vers[a.id]?`<select onchange="sel['${a.id}']=this.value">${vers[a.id].map(v=>`<option value="${esc(v.id)}"${(sel[a.id]||"")==v.id||(!sel[a.id]&&v.default)?" selected":""}>v${esc(v.version)} · ${v.created?new Date(v.created*1000).toISOString().slice(0,10):"?"}${v.channels.length?" · "+esc(v.channels.join(", ")):""}${g&&g.build_id==v.id?" (installed)":""}</option>`).join("")}</select> `:`<button class="sec" onclick="loadVers('${a.id}')">Versions…</button> `)+`<button onclick="post('/api/install',{app_id:'${a.id}',build_id:sel['${a.id}']||''})">${g?"Reinstall":"Install"}</button>`;
   else act="";
   if(j&&j.status=="error")act+=` <span class="err">${esc(j.error)}</span>`;
-  return `<tr><td>${esc(a.name)}<div class="mute">${a.id}${a.version?" · v"+esc(a.version):""}</div></td><td>${badge(a)}</td><td style="text-align:right">${act}</td></tr>`}).join("")
+  return `<tr><td>${esc(a.name)}<div class="mute">${a.id}${a.version?" · newest v"+esc(a.version):""}${g&&g.version?" · installed v"+esc(g.version):""}</div></td><td>${badge(a)}</td><td style="text-align:right">${act}</td></tr>`}).join("")
   :`<tr><td class="mute">${s.apps.length?"No matches.":"Press “Refresh library” to load the games you own."}</td></tr>`;
  const gs=Object.values(s.installed);
  document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';

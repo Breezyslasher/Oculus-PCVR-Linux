@@ -18,6 +18,13 @@ struct ovrTextureSwapChainData;  /* opaque; defined in swapchain_d3d.c */
 ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
                                          const ovrTextureSwapChainDesc *desc);
 void swapchain_d3d_destroy(ovrTextureSwapChain chain);
+
+/* OpenGL chains, created in the caller's current GL context. They share
+ * every other swapchain_d3d_* call; submit_texture returns the GL texture
+ * name cast to a pointer, as OpenVR wants for OpenGL textures. */
+ovrTextureSwapChain swapchain_gl_create(const ovrTextureSwapChainDesc *desc);
+int swapchain_is_gl(ovrTextureSwapChain chain);
+unsigned swapchain_gl_buffer(ovrTextureSwapChain chain, int index);
 /* True if `chain` is a live swap chain we created. Lets callers validate a
  * pointer read from a game struct before using it. */
 int swapchain_d3d_known(ovrTextureSwapChain chain);

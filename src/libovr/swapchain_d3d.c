@@ -2,6 +2,7 @@
 
 #define COBJMACROS
 #include <d3d11.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +14,8 @@
 
 struct ovrTextureSwapChainData {
     ID3D11Texture2D *textures[MAX_CHAIN_LENGTH];
+    int gl;                             /* an OpenGL chain (gl_tex, no textures) */
+    unsigned gl_tex[MAX_CHAIN_LENGTH];  /* GL texture names */
     int length;
     int index;          /* next buffer the game will render into */
     int committed;      /* last index committed, or -1 */
@@ -164,12 +167,184 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
     return (ovrTextureSwapChain)c;
 }
 
+/* ---- OpenGL chains --------------------------------------------------------
+ * Same ring and bookkeeping, holding GL texture names instead. The game makes
+ * its GL context current before creating, committing and destroying chains,
+ * so the textures live in its context. GL entry points come from the game's
+ * opengl32.dll at run time, so D3D games never load it. */
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE_BINDING_2D 0x8069
+#define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_MAG_FILTER 0x2800
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+#define GL_LINEAR 0x2601
+#define GL_CLAMP_TO_EDGE 0x812F
+#define GL_RGBA 0x1908
+#define GL_UNSIGNED_BYTE 0x1401
+#define GL_FLOAT 0x1406
+#define GL_HALF_FLOAT 0x140B
+#define GL_DEPTH_COMPONENT 0x1902
+#define GL_DEPTH_STENCIL 0x84F9
+#define GL_UNSIGNED_INT_24_8 0x84FA
+#define GL_FLOAT_32_UNSIGNED_INT_24_8_REV 0x8DAD
+#define GL_UNSIGNED_SHORT 0x1403
+#define GL_RGB 0x1907
+#define GL_UNSIGNED_INT_10F_11F_11F_REV 0x8C3B
+#define GL_RGBA8 0x8058
+#define GL_SRGB8_ALPHA8 0x8C43
+#define GL_RGBA16F 0x881A
+#define GL_R11F_G11F_B10F 0x8C3A
+#define GL_DEPTH_COMPONENT16 0x81A5
+#define GL_DEPTH24_STENCIL8 0x88F0
+#define GL_DEPTH_COMPONENT32F 0x8CAC
+#define GL_DEPTH32F_STENCIL8 0x8CAD
+
+static struct {
+    int loaded;
+    void (WINAPI *GenTextures)(int, unsigned *);
+    void (WINAPI *DeleteTextures)(int, const unsigned *);
+    void (WINAPI *BindTexture)(unsigned, unsigned);
+    void (WINAPI *TexParameteri)(unsigned, unsigned, int);
+    void (WINAPI *TexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned,
+                              const void *);
+    void (WINAPI *GetIntegerv)(unsigned, int *);
+    void (WINAPI *TexStorage2D)(unsigned, int, unsigned, int, int);
+} gl;
+
+static int gl_load(void)
+{
+    if (gl.loaded)
+        return gl.loaded > 0;
+    HMODULE m = LoadLibraryW(L"opengl32.dll");
+    PROC (WINAPI *get_proc)(LPCSTR) = m ? (void *)GetProcAddress(m, "wglGetProcAddress") : NULL;
+#define GLFN(field, name) gl.field = m ? (void *)GetProcAddress(m, name) : NULL
+    GLFN(GenTextures, "glGenTextures");
+    GLFN(DeleteTextures, "glDeleteTextures");
+    GLFN(BindTexture, "glBindTexture");
+    GLFN(TexParameteri, "glTexParameteri");
+    GLFN(TexImage2D, "glTexImage2D");
+    GLFN(GetIntegerv, "glGetIntegerv");
+#undef GLFN
+    /* GL 4.2 / ARB_texture_storage: only through wglGetProcAddress, which
+     * needs the game's context current (it is, when it creates a chain). */
+    gl.TexStorage2D = get_proc ? (void *)get_proc("glTexStorage2D") : NULL;
+    gl.loaded = gl.GenTextures && gl.DeleteTextures && gl.BindTexture &&
+                gl.TexParameteri && gl.TexImage2D && gl.GetIntegerv ? 1 : -1;
+    if (gl.loaded < 0)
+        LOG("OpenGL entry points not found in opengl32.dll");
+    return gl.loaded > 0;
+}
+
+/* GL sized internal format, plus the format/type pair glTexImage2D wants. */
+static unsigned gl_internal_format(ovrTextureFormat f, unsigned *fmt, unsigned *type)
+{
+    *fmt = GL_RGBA;
+    *type = GL_UNSIGNED_BYTE;
+    switch (f) {
+    case OVR_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case OVR_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case OVR_FORMAT_B8G8R8X8_UNORM_SRGB:
+        return GL_SRGB8_ALPHA8;
+    case OVR_FORMAT_R16G16B16A16_FLOAT:
+        *type = GL_HALF_FLOAT;
+        return GL_RGBA16F;
+    case OVR_FORMAT_R11G11B10_FLOAT:
+        *fmt = GL_RGB;
+        *type = GL_UNSIGNED_INT_10F_11F_11F_REV;
+        return GL_R11F_G11F_B10F;
+    case OVR_FORMAT_D16_UNORM:
+        *fmt = GL_DEPTH_COMPONENT;
+        *type = GL_UNSIGNED_SHORT;
+        return GL_DEPTH_COMPONENT16;
+    case OVR_FORMAT_D24_UNORM_S8_UINT:
+        *fmt = GL_DEPTH_STENCIL;
+        *type = GL_UNSIGNED_INT_24_8;
+        return GL_DEPTH24_STENCIL8;
+    case OVR_FORMAT_D32_FLOAT:
+        *fmt = GL_DEPTH_COMPONENT;
+        *type = GL_FLOAT;
+        return GL_DEPTH_COMPONENT32F;
+    case OVR_FORMAT_D32_FLOAT_S8X24_UINT:
+        *fmt = GL_DEPTH_STENCIL;
+        *type = GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
+        return GL_DEPTH32F_STENCIL8;
+    default:   /* RGBA8 / BGRA8 / BGRX8 unorm: GL keeps no BGRA internal format */
+        return GL_RGBA8;
+    }
+}
+
+ovrTextureSwapChain swapchain_gl_create(const ovrTextureSwapChainDesc *desc)
+{
+    if (!desc || desc->Width <= 0 || desc->Height <= 0 || !gl_load())
+        return NULL;
+    if (desc->ArraySize > 1 || desc->SampleCount > 1)
+        LOG("GL swap chain: array size %d / %d samples not supported; making a "
+            "plain 2D texture", desc->ArraySize, desc->SampleCount);
+    struct ovrTextureSwapChainData *c = calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->gl = 1;
+    c->length = desc->StaticImage ? 1 : 2;
+    c->committed = -1;
+    c->width = desc->Width;
+    c->height = desc->Height;
+    int levels = desc->MipLevels > 0 ? desc->MipLevels : 1;
+    unsigned fmt, type, internal = gl_internal_format(desc->Format, &fmt, &type);
+
+    int prev = 0;
+    gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    gl.GenTextures(c->length, c->gl_tex);
+    for (int i = 0; i < c->length; i++) {
+        gl.BindTexture(GL_TEXTURE_2D, c->gl_tex[i]);
+        if (gl.TexStorage2D) {
+            gl.TexStorage2D(GL_TEXTURE_2D, levels, internal, desc->Width, desc->Height);
+        } else {
+            gl.TexImage2D(GL_TEXTURE_2D, 0, (int)internal, desc->Width, desc->Height, 0,
+                          fmt, type, NULL);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        }
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    gl.BindTexture(GL_TEXTURE_2D, (unsigned)prev);
+    if (!c->gl_tex[0]) {
+        LOG("glGenTextures gave no texture (no current GL context?)");
+        free(c);
+        return NULL;
+    }
+    live_set(NULL, c);
+    LOG("created %d-texture GL swap chain %dx%d internal format 0x%x (textures %u..%u, %s)",
+        c->length, desc->Width, desc->Height, internal, c->gl_tex[0],
+        c->gl_tex[c->length - 1], gl.TexStorage2D ? "glTexStorage2D" : "glTexImage2D");
+    return (ovrTextureSwapChain)c;
+}
+
+int swapchain_is_gl(ovrTextureSwapChain chain)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    return c && c->gl;
+}
+
+unsigned swapchain_gl_buffer(ovrTextureSwapChain chain, int index)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c || !c->gl || index < 0 || index >= c->length)
+        return 0;
+    return c->gl_tex[index];
+}
+
 void swapchain_d3d_destroy(ovrTextureSwapChain chain)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
     if (!c)
         return;
     live_set(c, NULL);
+    if (c->gl && gl.DeleteTextures)
+        gl.DeleteTextures(c->length, c->gl_tex);
     for (int i = 0; i < MAX_CHAIN_LENGTH; i++)
         if (c->textures[i])
             ID3D11Texture2D_Release(c->textures[i]);
@@ -219,6 +394,8 @@ void *swapchain_d3d_submit_texture(ovrTextureSwapChain chain)
     if (!c)
         return NULL;
     int i = c->committed >= 0 ? c->committed : 0;
+    if (c->gl)   /* OpenVR takes a GL texture name as its handle */
+        return (void *)(uintptr_t)c->gl_tex[i];
     return c->textures[i];
 }
 
@@ -238,7 +415,7 @@ static void clear_texture(struct ovrTextureSwapChainData *c, ID3D11Texture2D *te
 void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
-    if (!c)
+    if (!c || c->gl)   /* D3D-only debug aid */
         return;
     /* Magenta for the left eye, cyan for the right. */
     const float colors[2][4] = {{1, 0, 1, 1}, {0, 1, 1, 1}};
@@ -248,7 +425,7 @@ void swapchain_d3d_fill_test_pattern(ovrTextureSwapChain chain, int eye)
 void swapchain_d3d_preclear_next(ovrTextureSwapChain chain)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
-    if (!c)
+    if (!c || c->gl)   /* D3D-only debug aid */
         return;
     const float marker[4] = {0.0f, 0.25f, 0.0f, 1.0f};  /* dark green */
     clear_texture(c, c->textures[c->index], marker);

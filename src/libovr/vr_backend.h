@@ -80,10 +80,11 @@ int vr_backend_dxgi_adapter_index(void);
  * submit each eye's committed D3D11 texture, then present. */
 bool vr_backend_begin_frame(void);
 
-/* Submit one eye. `d3d11_texture` is an ID3D11Texture2D*; the sub-rectangle
+/* Submit one eye. `texture` is an ID3D11Texture2D*, or with `is_gl` an
+ * OpenGL texture name cast to a pointer; the sub-rectangle
  * [uMin,vMin]-[uMax,vMax] selects this eye's region (0,0,1,1 for a whole
  * per-eye texture). Returns false on compositor error. */
-bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
+bool vr_backend_submit_eye(ovrEyeType eye, void *texture, int is_gl,
                            float uMin, float vMin, float uMax, float vMax,
                            const ovrPosef *render_pose);
 

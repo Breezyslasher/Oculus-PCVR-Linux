@@ -501,10 +501,16 @@ bool vr_backend_controller(int hand, struct vr_controller *out, float predict_se
     return true;
 }
 
+/* Eyes submitted since the last WaitGetPoses (bit per eye). The compositor
+ * takes one submission per eye per frame and answers a second with
+ * AlreadySubmitted (108). */
+static volatile LONG g_submitted_eyes;
+
 bool vr_backend_begin_frame(void)
 {
     if (!g_active)
         return false;
+    InterlockedExchange(&g_submitted_eyes, 0);
     /* Block until the compositor hands us this frame's render poses. We don't
      * use the returned poses directly yet (the game queried them via
      * ovr_GetTrackingState); the call also paces rendering to the display. */
@@ -569,15 +575,27 @@ static HmdMatrix34_t matrix_mul(const HmdMatrix34_t *a, const HmdMatrix34_t *b)
     return r;
 }
 
-bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
+bool vr_backend_submit_eye(ovrEyeType eye, void *texture, int is_gl,
                            float uMin, float vMin, float uMax, float vMax,
                            const ovrPosef *render_pose)
 {
-    if (!g_active || !d3d11_texture)
+    if (!g_active || !texture)
         return false;
+    /* Some games end a frame (ovr_EndFrame) without first waiting for the
+     * next one (ovr_WaitToBeginFrame), which is where we call WaitGetPoses.
+     * Their second submission of an eye would then be refused; start the
+     * compositor's next frame first instead (seen in Spider-Man: Far From
+     * Home on most frames, and in Bigscreen now and then). */
+    if (g_submitted_eyes & (1 << eye)) {
+        static LONG logged;
+        if (InterlockedIncrement(&logged) <= 3)
+            LOG("eye %d submitted twice in one frame; waiting for the next frame first",
+                (int)eye);
+        vr_backend_begin_frame();
+    }
     struct Texture_t tex;
-    tex.handle = d3d11_texture;
-    tex.eType = ETextureType_TextureType_DirectX;
+    tex.handle = texture;
+    tex.eType = is_gl ? ETextureType_TextureType_OpenGL : ETextureType_TextureType_DirectX;
     /* OVRSTUB_COLORSPACE=gamma|linear overrides Auto, for typeless or sRGB
      * textures the compositor may otherwise misread. */
     static int cs = -1;
@@ -609,8 +627,10 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
         EVRCompositorError e = g_compositor->Submit(
             (EVREye)eye, (struct Texture_t *)&tp, &bounds,
             EVRSubmitFlags_Submit_TextureWithPose);
-        if (e == EVRCompositorError_VRCompositorError_None)
+        if (e == EVRCompositorError_VRCompositorError_None) {
+            InterlockedOr(&g_submitted_eyes, 1 << eye);
             return true;
+        }
         static int warned;
         if (warned++ < 3)
             LOG("compositor Submit(eye %d, with pose) failed: %d; retrying without",
@@ -620,6 +640,8 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
                                                 EVRSubmitFlags_Submit_Default);
     if (e != EVRCompositorError_VRCompositorError_None)
         LOG("compositor Submit(eye %d) failed: %d", (int)eye, (int)e);
+    else
+        InterlockedOr(&g_submitted_eyes, 1 << eye);
     return e == EVRCompositorError_VRCompositorError_None;
 }
 

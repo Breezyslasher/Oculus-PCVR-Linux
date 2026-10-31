@@ -8,6 +8,7 @@ installed games in games.json and the store library cache in library.json.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -140,37 +141,74 @@ def _newest_build(builds: list) -> object | None:
     return (live or builds or [None])[0]
 
 
+def _manifest_kind(m: dict) -> tuple[str, str]:
+    """('pc' | 'quest' | 'other', detail) from a build's manifest."""
+    launch = (m.get("launchFile") or "").lower()
+    files = [f.lower() for f in (m.get("files") or {})]
+    if launch.endswith(".exe") or (not launch and any(f.endswith(".exe") for f in files)):
+        return "pc", m.get("launchFile") or ""
+    if launch.endswith(".apk") or any(f.endswith(".apk") for f in files):
+        return "quest", "Android APK"
+    return "other", f"launch file {launch or 'missing'}"
+
+
+def build_kind(token: str, build_id: str) -> str:
+    """Whether one build is for PC ('pc'), Quest ('quest') or neither.
+
+    Cross-buy apps list their Quest and PC builds under one app id, and the
+    store's version list doesn't say which is which, so ask each build's
+    manifest: a PC build launches a Windows .exe, a Quest build is an APK
+    (the CDN often has no PC manifest for it at all). Builds never change,
+    so answers are cached in build_kinds.json.
+    """
+    with _lock:
+        cache = _read("build_kinds.json")
+    if build_id in cache:
+        return cache[build_id]
+    try:
+        kind, _ = _manifest_kind(fetch_manifest(token, build_id))
+    except store.StoreError:
+        kind = "quest"
+    with _lock:
+        cache = _read("build_kinds.json")
+        cache[build_id] = kind
+        _write("build_kinds.json", cache)
+    return kind
+
+
+def _newest_pc_build(token: str, builds: list) -> object | None:
+    """The newest PC build: LIVE ones first, then any other channel."""
+    live = [b for b in builds if any(c.upper() == "LIVE" for c in b.channels)]
+    rest = [b for b in builds if b not in live]
+    for b in live + rest:
+        if build_kind(token, b.id) == "pc":
+            return b
+    return None
+
+
 def classify(token: str, app_id: str) -> dict:
     """Decide whether an owned app is a PC (Rift) game we can install.
 
-    The entitlement list doesn't say, and Quest and Rift versions of a game
-    have separate IDs. So look at the newest build: a Rift build's manifest
-    names a Windows .exe to launch; a Quest build is an APK (the CDN serves
-    no Rift manifest for it), and system/bundle entries have no builds.
+    The entitlement list doesn't say, Quest and Rift versions of a game often
+    have separate IDs, and cross-buy apps mix both kinds of build under one
+    ID. So look for the newest PC build; failing that, the app is Quest-only
+    (or a system/bundle entry with no builds at all).
     """
     try:
         name, builds = store.app_builds(token, app_id)
     except store.StoreError as e:
         info = {"kind": "other", "reason": str(e)}
     else:
-        b = _newest_build(builds)
-        if b is None:
+        if not builds:
             info = {"kind": "other", "reason": "no downloadable builds"}
         else:
-            info = {"build_id": b.id, "version": b.version}
-            try:
-                m = fetch_manifest(token, b.id)
-            except store.StoreError:
-                info.update(kind="quest", reason="no PC manifest (Quest/Android build)")
+            b = _newest_pc_build(token, builds)
+            if b is not None:
+                info = {"kind": "pc", "build_id": b.id, "version": b.version}
             else:
-                launch = (m.get("launchFile") or "").lower()
-                files = [f.lower() for f in (m.get("files") or {})]
-                if launch.endswith(".exe") or (not launch and any(f.endswith(".exe") for f in files)):
-                    info.update(kind="pc", launch=m.get("launchFile") or "")
-                elif launch.endswith(".apk") or any(f.endswith(".apk") for f in files):
-                    info.update(kind="quest", reason="Android APK")
-                else:
-                    info.update(kind="other", reason=f"launch file {launch or 'missing'}")
+                newest = _newest_build(builds)
+                info = {"kind": "quest", "build_id": newest.id, "version": newest.version,
+                        "reason": "no PC build (Quest/Android only)"}
     _update_cached_app(app_id, **{"kind": None, "reason": None, **info})
     return info
 
@@ -220,9 +258,25 @@ def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
     return exe, "OculusRift", "unknown"
 
 
+def versions(app_id: str, token: str | None = None) -> list[dict]:
+    """Every downloadable PC build of an app, newest first (Quest builds of
+    cross-buy apps are left out)."""
+    from concurrent.futures import ThreadPoolExecutor
+    token = token or store.load_token()
+    _, builds = store.app_builds(token, app_id)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        kinds = list(pool.map(lambda b: build_kind(token, b.id), builds))
+    pc = [b for b, k in zip(builds, kinds) if k == "pc"]
+    default = _newest_pc_build(token, pc)
+    return [{"id": b.id, "version": b.version, "code": b.version_code,
+             "created": b.created, "channels": [c for c in b.channels if c],
+             "default": default is not None and b.id == default.id} for b in pc]
+
+
 def install(app_id: str, token: str | None = None, on_progress=None,
-            log=print) -> dict:
-    """Download the newest build of a PC app, stage it and add it to Steam.
+            log=print, build_id: str | None = None) -> dict:
+    """Download a build of a PC app (default: the newest LIVE one), stage it
+    and add it to Steam.
 
     If Steam is running the game is queued; `add_queued()` (or the UI's
     "Add queued games to Steam") adds every queued game once Steam is closed.
@@ -230,22 +284,25 @@ def install(app_id: str, token: str | None = None, on_progress=None,
     token = token or store.load_token()
     cfg = load_config()
     if not cfg.get("real_runtime"):
-        raise LibraryError("set real_runtime first (`ovrl setup --real-runtime "
-                           "<path to genuine LibOVRRT64_1.dll>`)")
+        raise LibraryError("get Meta's runtime files first (`ovrl get-runtime`, or "
+                           "the 'Get Meta runtime files' button)")
     name, builds = store.app_builds(token, app_id)
     name = name or library_name(app_id, token)
-    build = _newest_build(builds)
-    if build is None:
+    if not builds:
         raise LibraryError(f"{name or app_id} has no downloadable builds")
+    if build_id:
+        build = next((b for b in builds if b.id == build_id), None)
+        if build is None:
+            raise LibraryError(f"{name or app_id} has no build {build_id}")
+        if build_kind(token, build.id) != "pc":
+            raise LibraryError(f"build {build_id} of {name or app_id} is a Quest "
+                               "build, not a PC one; pick another version")
+    else:
+        build = _newest_pc_build(token, builds)
+        if build is None:
+            raise LibraryError(f"{name or app_id} has no PC build (it looks like a "
+                               "Quest app); pick its Rift version instead")
     log(f"{name}: build {build.id}, version {build.version}")
-    try:
-        manifest_preview = fetch_manifest(token, build.id)
-    except store.StoreError:
-        raise LibraryError(f"{name or app_id} has no PC build (it looks like a "
-                           "Quest app); pick its Rift version instead") from None
-    if not (manifest_preview.get("launchFile") or "").lower().endswith(".exe"):
-        raise LibraryError(f"{name or app_id} isn't a PC game (launch file "
-                           f"{manifest_preview.get('launchFile')!r})")
 
     dest = Path(cfg["games_dir"]).expanduser() / _folder_name(name, app_id)
     log(f"downloading to {dest}")
@@ -310,6 +367,7 @@ def update_shims(log=print) -> list[str]:
         cli._install_file(shim, exe_dir / cli.SHIM_INJECT_NAME, "shim")
         cli._install_file(injector, exe_dir / cli.INJECTOR, "injector")
         cli._install_file(platform, exe_dir / cli.PLATFORM_INJECT_NAME, "Platform stub")
+        cli.write_identity(exe_dir)
         for name, src in ((cli.PLATFORM_DLL, platform), (cli.RUNTIME_DLL, shim)):
             target = exe_dir / name
             if target.is_file() and cli._is_our_stub(target):
@@ -426,3 +484,129 @@ def set_proton(tool: str | None = None, log=print) -> list[str]:
     cfg = load_config()
     return _call(cli.set_proton_for_shortcuts, tool or cfg.get("proton_tool"),
                  cfg.get("steam_root"), cfg.get("steam_user"), log=log)
+
+
+def apply_identity(token: str | None = None, log=print) -> dict:
+    """Fetch your Meta identity and write it beside every game's shim: the
+    installed games and any other folder under games_dir holding our shim."""
+    try:
+        token = token or store.load_token()
+    except store.StoreError:
+        token = None
+    ident = cli.fetch_identity(token) if token else cli.cached_identity()
+    if not ident:
+        raise LibraryError("log in first, so your identity can be fetched")
+    dirs = {Path(g["exe"]).parent for g in games().values()}
+    root = Path(load_config()["games_dir"]).expanduser()
+    if root.is_dir():
+        dirs |= {p.parent for p in root.rglob(cli.SHIM_INJECT_NAME)}
+    n = 0
+    for d in sorted(dirs):
+        if (d / cli.SHIM_INJECT_NAME).is_file() and cli.write_identity(d, ident):
+            n += 1
+    log(f"wrote your Meta identity ({ident['oculus_id']}) beside {n} game(s)")
+    return ident
+
+
+# --- Meta's genuine runtime DLLs, fetched from Meta ---
+
+META_PACKAGES = {
+    # package (as Meta's installer names it) -> the DLL we need from it
+    "oculus-runtime": cli.RUNTIME_DLL,
+    "oculus-platform-runtime": cli.PLATFORM_DLL,
+}
+
+
+def _pick_dll(names: list[str], dll: str) -> str | None:
+    """The 64-bit copy of `dll` among a package's file names, preferring the
+    one in the runtime's own folder."""
+    hits = [n for n in names if n.replace("\\", "/").rsplit("/", 1)[-1].lower() == dll.lower()]
+    hits.sort(key=lambda n: (("oculus-runtime" not in n.lower()
+                              and "platform" not in n.lower()), "32" in n, len(n)))
+    return hits[0] if hits else None
+
+
+def get_meta_runtime(token: str | None = None, apply: bool = True, log=print) -> dict:
+    """Download Meta's genuine LibOVRRT64_1.dll and LibOVRPlatform64_1.dll
+    straight from Meta, as the official PC installer does, using your own
+    login; set them as real_runtime / real_platform and (with apply) put them
+    beside your installed games.
+
+    Only those two files are fetched from Meta's packages, each verified
+    against Meta's SHA-256 hashes. Nothing is redistributed: every user
+    downloads their own copy from Meta.
+    """
+    from .download import fetch_manifest as _manifest
+    token = token or store.load_token()
+    config = store.bootstrap_config(token)["body"]
+    apps = {a.get("canonical_name"): a for a in config.get("applications") or []}
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") \
+        / "ovrl" / "meta-runtime"
+    got = {}
+    file_lists: dict[str, list[str]] = {}
+
+    def files_of(package: str) -> list[str]:
+        if package not in file_lists:
+            binary = str(apps[package]["binary_id"])
+            file_lists[package] = list((_manifest(token, binary).get("files") or {}).keys())
+        return file_lists[package]
+
+    for package, dll in META_PACKAGES.items():
+        # The expected package first, then every other one: Meta moves files
+        # between packages, and the Platform SDK loader games check isn't in
+        # oculus-platform-runtime (the Platform service) itself.
+        order = [package] + [p for p in apps if p != package]
+        want = None
+        for candidate in order:
+            if not apps.get(candidate, {}).get("binary_id"):
+                continue
+            try:
+                want = _pick_dll(files_of(candidate), dll)
+            except store.StoreError:
+                continue
+            if want:
+                package = candidate
+                break
+        if not want:
+            raise LibraryError(f"{dll} isn't in any of Meta's PC packages "
+                               f"(searched {', '.join(order)})")
+        binary = str(apps[package]["binary_id"])
+        dest = base / f"{package}-{binary}"
+        log(f"downloading {dll} from Meta's {package} package (binary {binary})")
+        download_build(token, binary, dest, only=lambda n, w=want: n == w)
+        path = dest / want.replace("\\", "/")
+        if not path.is_file() or not cli.pe_is_x64(path) or cli._is_our_stub(path):
+            raise LibraryError(f"{path} isn't the 64-bit DLL expected")
+        got[dll] = path
+        log(f"  -> {path}")
+    save_config({"real_runtime": str(got[cli.RUNTIME_DLL]),
+                 "real_platform": str(got[cli.PLATFORM_DLL])})
+    log("set real_runtime and real_platform to Meta's genuine DLLs")
+    if apply:
+        apply_meta_runtime(log=log)
+    return {k: str(v) for k, v in got.items()}
+
+
+def apply_meta_runtime(log=print) -> int:
+    """Put the genuine DLLs beside every game that has our shim: the runtime
+    as LibOVRRT64_1.dll (the signature check reads it) and, where our
+    Platform stub is staged as ovrstub_platform.dll, the genuine Platform
+    DLL as LibOVRPlatform64_1.dll (games that check its signature need it;
+    the shim still loads our stub in its place)."""
+    cfg = load_config()
+    rt, pf = cfg.get("real_runtime"), cfg.get("real_platform")
+    dirs = {Path(g["exe"]).parent for g in games().values()}
+    root = Path(cfg["games_dir"]).expanduser()
+    if root.is_dir():
+        dirs |= {p.parent for p in root.rglob(cli.SHIM_INJECT_NAME)}
+    n = 0
+    for d in sorted(dirs):
+        if not (d / cli.SHIM_INJECT_NAME).is_file():
+            continue
+        if rt:
+            cli._install_file(Path(rt), d / cli.RUNTIME_DLL, "genuine runtime")
+        if pf and (d / cli.PLATFORM_INJECT_NAME).is_file():
+            cli._install_file(Path(pf), d / cli.PLATFORM_DLL, "genuine Platform SDK")
+        n += 1
+    log(f"put Meta's genuine DLLs beside {n} game(s)")
+    return n
