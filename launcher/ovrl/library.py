@@ -284,8 +284,8 @@ def install(app_id: str, token: str | None = None, on_progress=None,
     token = token or store.load_token()
     cfg = load_config()
     if not cfg.get("real_runtime"):
-        raise LibraryError("set real_runtime first (`ovrl setup --real-runtime "
-                           "<path to genuine LibOVRRT64_1.dll>`)")
+        raise LibraryError("get Meta's runtime files first (`ovrl get-runtime`, or "
+                           "the 'Get Meta runtime files' button)")
     name, builds = store.app_builds(token, app_id)
     name = name or library_name(app_id, token)
     if not builds:

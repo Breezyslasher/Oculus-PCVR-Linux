@@ -366,7 +366,7 @@ async function loadVers(id){const j=await post("/api/versions",{app_id:id});if(j
 function draw(){const s=st;
  document.getElementById("status").innerHTML=`<div class="bar">
  ${s.logged_in?(s.user?`<span>Logged in as <b>${esc(s.user)}</b> <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`:`<span>Logged in <button class="sec" onclick="document.getElementById('login').hidden=false">Change</button></span>`):'<span class="err">Not logged in: paste your token below.</span>'}
- ${s.config.real_runtime?"":'<span class="err">Set the genuine LibOVRRT64_1.dll path in Settings below.</span>'}
+ ${s.config.real_runtime?"":'<span class="err">Meta runtime files missing: press “Get Meta runtime files” below.</span>'}
  <span>Steam: ${s.steam_running?'<b class="unk">running</b> (games get queued; quit Steam to add them)':'<b class="pc">closed</b>'}</span>
  ${s.queued.length?`<span>Queued for Steam: ${esc(s.queued.join(", "))}</span>`:""}
  ${s.busy?`<span class="mute">${esc(s.busy)}…</span>`:""}</div>`;
