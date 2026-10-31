@@ -831,7 +831,18 @@ def cmd_identity(args: argparse.Namespace) -> int:
 def cmd_runtime_probe(args: argparse.Namespace) -> int:
     """Research: ask Meta which PC software packages exist (redacted output)."""
     import json
-    res = store.bootstrap_config(store.load_token(), args.channel)
+    token = store.load_token()
+    res = store.bootstrap_config(token, args.channel)
+    if args.files:
+        from .download import fetch_manifest
+        apps = {a.get("canonical_name"): a for a in res["body"].get("applications") or []}
+        if args.files not in apps:
+            sys.exit(f"ovrl: no package {args.files}; have: {', '.join(apps)}")
+        files = fetch_manifest(token, str(apps[args.files]["binary_id"])).get("files") or {}
+        for name in sorted(files):
+            print(f"{int(files[name].get('size', 0)):>12}  {name}")
+        print(f"{len(files)} files in {args.files}")
+        return 0
     print(f"bootstrap_installer_config answered ({res['method']}):")
     print(json.dumps(store.redact(res["body"]), indent=2)[:20000])
     return 0
@@ -1032,6 +1043,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("runtime-probe", help="(research) list Meta's PC software "
                                              "packages, tokens redacted")
     s.add_argument("--channel", default="LIVE")
+    s.add_argument("--files", metavar="PACKAGE",
+                   help="list the files in one package, e.g. oculus-platform-runtime")
     s.set_defaults(func=cmd_runtime_probe)
 
     s = sub.add_parser("get-runtime", help="download Meta's genuine LibOVRRT64_1.dll "

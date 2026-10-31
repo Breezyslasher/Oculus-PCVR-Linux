@@ -543,15 +543,34 @@ def get_meta_runtime(token: str | None = None, apply: bool = True, log=print) ->
     base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") \
         / "ovrl" / "meta-runtime"
     got = {}
+    file_lists: dict[str, list[str]] = {}
+
+    def files_of(package: str) -> list[str]:
+        if package not in file_lists:
+            binary = str(apps[package]["binary_id"])
+            file_lists[package] = list((_manifest(token, binary).get("files") or {}).keys())
+        return file_lists[package]
+
     for package, dll in META_PACKAGES.items():
-        app = apps.get(package)
-        if not app or not app.get("binary_id"):
-            raise LibraryError(f"Meta's installer config has no {package} package")
-        binary = str(app["binary_id"])
-        names = list((_manifest(token, binary).get("files") or {}).keys())
-        want = _pick_dll(names, dll)
+        # The expected package first, then every other one: Meta moves files
+        # between packages, and the Platform SDK loader games check isn't in
+        # oculus-platform-runtime (the Platform service) itself.
+        order = [package] + [p for p in apps if p != package]
+        want = None
+        for candidate in order:
+            if not apps.get(candidate, {}).get("binary_id"):
+                continue
+            try:
+                want = _pick_dll(files_of(candidate), dll)
+            except store.StoreError:
+                continue
+            if want:
+                package = candidate
+                break
         if not want:
-            raise LibraryError(f"{dll} not found in Meta's {package} package")
+            raise LibraryError(f"{dll} isn't in any of Meta's PC packages "
+                               f"(searched {', '.join(order)})")
+        binary = str(apps[package]["binary_id"])
         dest = base / f"{package}-{binary}"
         log(f"downloading {dll} from Meta's {package} package (binary {binary})")
         download_build(token, binary, dest, only=lambda n, w=want: n == w)
