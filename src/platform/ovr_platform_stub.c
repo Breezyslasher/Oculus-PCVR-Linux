@@ -285,6 +285,13 @@ EXPORT ovrRequest ovr_Message_GetRequestID(ovrMessageHandle m)
     return m ? m->request_id : invalidRequestID;
 }
 
+/* Unity's Oculus.Platform wrapper reads every message through this before
+ * calling the type-specific getters; our messages are already "native". */
+EXPORT ovrMessageHandle ovr_Message_GetNativeMessage(ovrMessageHandle m)
+{
+    return m;
+}
+
 EXPORT ovrUserHandle ovr_Message_GetUser(ovrMessageHandle m)
 {
     return m ? m->user : NULL;

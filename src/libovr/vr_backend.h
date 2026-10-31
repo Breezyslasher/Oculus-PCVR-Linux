@@ -33,8 +33,22 @@ ovrFovPort vr_backend_fov(ovrEyeType eye);
 /* Eye pose relative to the head (HmdToEyePose), as a LibOVR pose. */
 ovrPosef vr_backend_eye_pose(ovrEyeType eye);
 
+/* Tracking origin (see vr_backend.c): eye level (0, LibOVR's default) or
+ * floor level (1); recenter moves the origin to the current head; specify
+ * makes a pose in the current frame the new origin. Head and controller
+ * poses are reported in this frame. */
+void vr_backend_set_origin(int floor_level);
+int vr_backend_origin_is_floor(void);
+void vr_backend_recenter(void);
+void vr_backend_specify_origin(ovrPosef origin);
+
 /* Latest head pose (orientation + position). Identity if unavailable. */
-ovrPoseStatef vr_backend_head_pose(void);
+ovrPoseStatef vr_backend_head_pose(float predict_seconds);
+
+/* Seconds from now until a frame started now reaches the display, and the
+ * display's refresh rate; from SteamVR's vsync timing (defaults if unknown). */
+double vr_backend_seconds_to_photons(void);
+float vr_backend_display_hz(void);
 
 /* One hand controller's state as SteamVR reports it (legacy input). */
 /* OpenVR EVRButtonId values used by its legacy Touch bindings, so callers
@@ -51,11 +65,11 @@ struct vr_controller {
     uint64_t touched;
     float axis[5][2];          /* x, y per OpenVR axis */
     int pose_valid;
-    ovrPoseStatef pose;        /* standing space, like the head pose */
+    ovrPoseStatef pose;        /* tracking-origin frame, like the head pose */
 };
 
 /* Read hand 0 (left) or 1 (right). Returns false if it isn't connected. */
-bool vr_backend_controller(int hand, struct vr_controller *out);
+bool vr_backend_controller(int hand, struct vr_controller *out, float predict_seconds);
 
 bool vr_backend_hmd_present(void);
 /* DXGI adapter index SteamVR renders to, or -1 if it doesn't say. */
@@ -70,7 +84,8 @@ bool vr_backend_begin_frame(void);
  * [uMin,vMin]-[uMax,vMax] selects this eye's region (0,0,1,1 for a whole
  * per-eye texture). Returns false on compositor error. */
 bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
-                           float uMin, float vMin, float uMax, float vMax);
+                           float uMin, float vMin, float uMax, float vMax,
+                           const ovrPosef *render_pose);
 
 void vr_backend_present(void);
 /* Log what the compositor thinks of us (scene focus, presents, drops). */

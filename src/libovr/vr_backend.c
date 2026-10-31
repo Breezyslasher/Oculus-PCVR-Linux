@@ -43,30 +43,52 @@ static void *resolve(HMODULE m, const char *name)
     return (void *)GetProcAddress(m, name);
 }
 
-/* Load openvr_api.dll. Launched via `proton run` (not as a Steam VR app),
- * Proton doesn't put it on the DLL search path, so after the bare name we
- * also try a copy next to this shim, which ovrl prefix-setup places there. */
+/* Load openvr_api.dll. Prefer the copy next to this shim: ovrl places
+ * SteamVR's current one there (beside the game exe for Steam launches, in the
+ * prefix for `proton run`). A bare-name load could instead return a copy the
+ * game itself ships and already loaded (Unity's OpenVR XR plugin bundles
+ * one), whose age can make the interface lookups below fail. */
+/* "major.minor.build.rev" from a loaded module's version resource. */
+static const char *module_version(HMODULE m)
+{
+    static char buf[48];
+    snprintf(buf, sizeof(buf), "unknown");
+    HRSRC r = FindResourceW(m, MAKEINTRESOURCEW(1), (LPCWSTR)RT_VERSION);
+    HGLOBAL g = r ? LoadResource(m, r) : NULL;
+    const BYTE *p = g ? LockResource(g) : NULL;
+    DWORD n = r ? SizeofResource(m, r) : 0;
+    for (DWORD i = 0; p && i + sizeof(VS_FIXEDFILEINFO) <= n; i += 4) {
+        const VS_FIXEDFILEINFO *fi = (const VS_FIXEDFILEINFO *)(p + i);
+        if (fi->dwSignature == 0xFEEF04BD) {
+            snprintf(buf, sizeof(buf), "%lu.%lu.%lu.%lu",
+                     (unsigned long)HIWORD(fi->dwFileVersionMS), (unsigned long)LOWORD(fi->dwFileVersionMS),
+                     (unsigned long)HIWORD(fi->dwFileVersionLS), (unsigned long)LOWORD(fi->dwFileVersionLS));
+            break;
+        }
+    }
+    return buf;
+}
+
 static HMODULE load_openvr_api(void)
 {
-    HMODULE m = LoadLibraryW(L"openvr_api.dll");
-    if (m)
-        return m;
-
-    HMODULE self = NULL;
+    HMODULE m = NULL, self = NULL;
+    WCHAR path[MAX_PATH];
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        (LPCWSTR)(void *)&load_openvr_api, &self);
-    WCHAR path[MAX_PATH];
     DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
     while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')
         n--;
     path[n] = 0;
-    if (wcslen(path) + 15 < MAX_PATH) {
+    if (n && wcslen(path) + 15 < MAX_PATH) {
         wcscat(path, L"openvr_api.dll");
-        m = LoadLibraryW(path);
-        if (m)
-            LOG("loaded openvr_api.dll from %ls", path);
+        if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
+            m = LoadLibraryW(path);
     }
+    if (!m)
+        m = LoadLibraryW(L"openvr_api.dll");
+    if (m && GetModuleFileNameW(m, path, MAX_PATH))
+        LOG("using %ls (version %s)", path, module_version(m));
     return m;
 }
 
@@ -111,13 +133,20 @@ bool vr_backend_init(void)
     snprintf(name, sizeof(name), "FnTable:%s", IVRCompositor_Version);
     g_compositor = (struct VR_IVRCompositor_FnTable *)p_GetGenericInterface(name, &err2);
     if (!g_system || !g_compositor) {
-        LOG("could not get OpenVR interfaces (%s / %s); system=%p compositor=%p",
-            IVRSystem_Version, IVRCompositor_Version, (void *)g_system,
-            (void *)g_compositor);
+        LOG("could not get OpenVR interfaces (%s: %s / %s: %s); system=%p compositor=%p. "
+            "Proton's VR bridge probably doesn't offer these versions: try a newer Proton "
+            "(Proton 11 works) for this game",
+            IVRSystem_Version, p_GetErrDesc ? p_GetErrDesc(err) : "?",
+            IVRCompositor_Version, p_GetErrDesc ? p_GetErrDesc(err2) : "?",
+            (void *)g_system, (void *)g_compositor);
         p_ShutdownInternal();
         return false;
     }
 
+    /* Our poses are in standing space; make the compositor's match, since
+     * it interprets submitted render poses in its own tracking space. */
+    if (g_compositor->SetTrackingSpace)
+        g_compositor->SetTrackingSpace(ETrackingUniverseOrigin_TrackingUniverseStanding);
     g_active = 1;
     LOG("OpenVR backend up (%s, %s)", IVRSystem_Version, IVRCompositor_Version);
     return true;
@@ -168,14 +197,20 @@ ovrFovPort vr_backend_fov(ovrEyeType eye)
     ovrFovPort fov = {1.0f, 1.0f, 1.0f, 1.0f};
     if (!g_active)
         return fov;
-    /* OpenVR gives raw projection tangents (left/right/top/bottom), with up
-     * negative. LibOVR wants positive up/down/left/right half-tangents. */
+    /* OpenVR gives raw projection tangents (left/right/top/bottom).
+     * Despite the names, "top" and "bottom" are y-down: building the
+     * projection from them (OpenVR's ComposeProjection) maps a direction
+     * with tangent `b` to the top of the image, so `b` is the UP extent and
+     * `t` (negative) the DOWN one. Reading them the other way round told
+     * games the Quest 3 sees more up than down (1.43 vs 0.97 when it's the
+     * reverse); the frame then didn't match the compositor's projection
+     * and the world zoomed and swam with head motion. */
     float l = 0, r = 0, t = 0, b = 0;
     g_system->GetProjectionRaw((EVREye)eye, &l, &r, &t, &b);
     fov.LeftTan = fabsf(l);
     fov.RightTan = fabsf(r);
-    fov.UpTan = fabsf(t);
-    fov.DownTan = fabsf(b);
+    fov.UpTan = fabsf(b);
+    fov.DownTan = fabsf(t);
     return fov;
 }
 
@@ -228,7 +263,167 @@ ovrPosef vr_backend_eye_pose(ovrEyeType eye)
     return pose_from_matrix(&m);
 }
 
-ovrPoseStatef vr_backend_head_pose(void)
+float vr_backend_display_hz(void)
+{
+    if (!g_active)
+        return 90.0f;
+    ETrackedPropertyError err = ETrackedPropertyError_TrackedProp_Success;
+    float hz = g_system->GetFloatTrackedDeviceProperty(
+        k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &err);
+    return (err == ETrackedPropertyError_TrackedProp_Success && hz > 1.0f) ? hz : 90.0f;
+}
+
+/* Valve's recipe for "seconds to photons": the rest of this frame, plus the
+ * display's vsync-to-photons latency. */
+double vr_backend_seconds_to_photons(void)
+{
+    float hz = vr_backend_display_hz();
+    if (!g_active)
+        return 1.0 / hz;
+    float since_vsync = 0.0f;
+    uint64_t frame = 0;
+    g_system->GetTimeSinceLastVsync(&since_vsync, &frame);
+    ETrackedPropertyError err = ETrackedPropertyError_TrackedProp_Success;
+    float to_photons = g_system->GetFloatTrackedDeviceProperty(
+        k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float,
+        &err);
+    if (err != ETrackedPropertyError_TrackedProp_Success || to_photons < 0.0f)
+        to_photons = 0.0f;
+    double s = 1.0 / hz - since_vsync + to_photons;
+    return s > 0.0 ? s : 0.0;
+}
+
+/* ---- Tracking origin ----------------------------------------------------
+ * LibOVR games pick an origin: eye level (the SDK default; poses relative to
+ * where the head was at the last recenter) or floor level (y measured from
+ * the floor). SteamVR's standing universe is floor level, so we hand out
+ * standing poses moved into a reference frame: subtract the reference
+ * position and undo its yaw. Eye level takes the first head pose read as its
+ * reference; floor level starts at SteamVR's own origin. Recentering moves
+ * the reference to the current head (keeping y = 0 at floor level). Frames
+ * the game submits carry render poses in its frame; those go back to
+ * standing space before reaching the compositor. */
+static int g_floor_level;
+static int g_have_ref;
+static float g_ref_yaw;
+static ovrVector3f g_ref_pos;
+
+static ovrQuatf quat_mul(ovrQuatf a, ovrQuatf b)
+{
+    ovrQuatf r = {
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+    return r;
+}
+
+static ovrQuatf yaw_quat(float yaw)
+{
+    ovrQuatf q = {0.0f, sinf(yaw * 0.5f), 0.0f, cosf(yaw * 0.5f)};
+    return q;
+}
+
+/* Rotate v about +Y by yaw. */
+static ovrVector3f yaw_rotate(float yaw, ovrVector3f v)
+{
+    float c = cosf(yaw), s = sinf(yaw);
+    ovrVector3f r = {c * v.x + s * v.z, v.y, -s * v.x + c * v.z};
+    return r;
+}
+
+/* Heading of an orientation: rotation about +Y of its forward (-Z) axis. */
+static float yaw_of(ovrQuatf q)
+{
+    /* forward = q * (0,0,-1) */
+    float fx = -2.0f * (q.x * q.z + q.w * q.y);
+    float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+    return atan2f(-fx, -fz);
+}
+
+static void set_reference(ovrPosef head)
+{
+    g_ref_yaw = yaw_of(head.Orientation);
+    g_ref_pos = head.Position;
+    if (g_floor_level)
+        g_ref_pos.y = 0.0f;
+    g_have_ref = 1;
+    LOG("tracking origin (%s level) set at (%.2f %.2f %.2f), heading %.0f deg",
+        g_floor_level ? "floor" : "eye", g_ref_pos.x, g_ref_pos.y, g_ref_pos.z,
+        g_ref_yaw * 57.29578f);
+}
+
+/* Standing space -> the game's tracking frame. */
+static void to_game_space(ovrPoseStatef *s)
+{
+    if (!g_have_ref)
+        return;
+    ovrVector3f d = {s->ThePose.Position.x - g_ref_pos.x,
+                     s->ThePose.Position.y - g_ref_pos.y,
+                     s->ThePose.Position.z - g_ref_pos.z};
+    s->ThePose.Position = yaw_rotate(-g_ref_yaw, d);
+    s->ThePose.Orientation = quat_mul(yaw_quat(-g_ref_yaw), s->ThePose.Orientation);
+    s->LinearVelocity = yaw_rotate(-g_ref_yaw, s->LinearVelocity);
+    s->AngularVelocity = yaw_rotate(-g_ref_yaw, s->AngularVelocity);
+}
+
+/* The game's tracking frame -> standing space (for submitted render poses). */
+static ovrPosef to_standing_space(ovrPosef p)
+{
+    if (!g_have_ref)
+        return p;
+    ovrVector3f r = yaw_rotate(g_ref_yaw, p.Position);
+    p.Position.x = r.x + g_ref_pos.x;
+    p.Position.y = r.y + g_ref_pos.y;
+    p.Position.z = r.z + g_ref_pos.z;
+    p.Orientation = quat_mul(yaw_quat(g_ref_yaw), p.Orientation);
+    return p;
+}
+
+static ovrPosef raw_head_pose(void)
+{
+    ovrPosef p;
+    memset(&p, 0, sizeof(p));
+    p.Orientation.w = 1.0f;
+    TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
+    memset(poses, 0, sizeof(poses));
+    g_system->GetDeviceToAbsoluteTrackingPose(
+        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        k_unMaxTrackedDeviceCount);
+    if (poses[k_unTrackedDeviceIndex_Hmd].bPoseIsValid)
+        p = pose_from_matrix(&poses[k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking);
+    return p;
+}
+
+void vr_backend_set_origin(int floor_level)
+{
+    if (floor_level == g_floor_level && (g_have_ref || floor_level))
+        return;
+    g_floor_level = floor_level;
+    g_have_ref = 0;   /* eye level re-captures on the next head pose read */
+    LOG("tracking origin type: %s level", floor_level ? "floor" : "eye");
+}
+
+int vr_backend_origin_is_floor(void)
+{
+    return g_floor_level;
+}
+
+void vr_backend_recenter(void)
+{
+    if (g_active)
+        set_reference(raw_head_pose());
+}
+
+void vr_backend_specify_origin(ovrPosef origin)
+{
+    /* `origin` is in the current game frame; make it the new reference. */
+    ovrPosef world = to_standing_space(origin);
+    set_reference(world);
+}
+
+ovrPoseStatef vr_backend_head_pose(float predict_seconds)
 {
     ovrPoseStatef s;
     memset(&s, 0, sizeof(s));
@@ -238,10 +433,10 @@ ovrPoseStatef vr_backend_head_pose(void)
 
     TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
     memset(poses, 0, sizeof(poses));
-    /* Standing-space poses, predicted to "now". The compositor supplies more
-     * precise render poses during the frame loop; this is for polling. */
+    /* Standing-space poses, predicted to the time the caller asked about
+     * (usually when its frame will be displayed). */
     g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
         k_unMaxTrackedDeviceCount);
 
     const TrackedDevicePose_t *hmd = &poses[k_unTrackedDeviceIndex_Hmd];
@@ -253,6 +448,9 @@ ovrPoseStatef vr_backend_head_pose(void)
         s.LinearVelocity.x = hmd->vVelocity.v[0];
         s.LinearVelocity.y = hmd->vVelocity.v[1];
         s.LinearVelocity.z = hmd->vVelocity.v[2];
+        if (!g_have_ref && !g_floor_level)
+            set_reference(s.ThePose);
+        to_game_space(&s);
     }
     return s;
 }
@@ -268,7 +466,7 @@ static void fill_pose_state(ovrPoseStatef *s, const TrackedDevicePose_t *p)
     s->LinearVelocity.z = p->vVelocity.v[2];
 }
 
-bool vr_backend_controller(int hand, struct vr_controller *out)
+bool vr_backend_controller(int hand, struct vr_controller *out, float predict_seconds)
 {
     memset(out, 0, sizeof(*out));
     out->pose.ThePose.Orientation.w = 1.0f;
@@ -293,10 +491,11 @@ bool vr_backend_controller(int hand, struct vr_controller *out)
     TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
     memset(poses, 0, sizeof(poses));
     g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, 0.0f, poses,
+        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
         k_unMaxTrackedDeviceCount);
     if (poses[idx].bPoseIsValid) {
         fill_pose_state(&out->pose, &poses[idx]);
+        to_game_space(&out->pose);
         out->pose_valid = 1;
     }
     return true;
@@ -320,8 +519,59 @@ bool vr_backend_begin_frame(void)
     return e == EVRCompositorError_VRCompositorError_None;
 }
 
+/* Rigid transform helpers on OpenVR's 3x4 row-major matrices. */
+static HmdMatrix34_t matrix_from_pose(const ovrPosef *p)
+{
+    float x = p->Orientation.x, y = p->Orientation.y, z = p->Orientation.z,
+          w = p->Orientation.w;
+    float n = sqrtf(x * x + y * y + z * z + w * w);
+    if (n > 0.0f) {
+        x /= n; y /= n; z /= n; w /= n;
+    }
+    HmdMatrix34_t m;
+    m.m[0][0] = 1 - 2 * (y * y + z * z);
+    m.m[0][1] = 2 * (x * y - z * w);
+    m.m[0][2] = 2 * (x * z + y * w);
+    m.m[1][0] = 2 * (x * y + z * w);
+    m.m[1][1] = 1 - 2 * (x * x + z * z);
+    m.m[1][2] = 2 * (y * z - x * w);
+    m.m[2][0] = 2 * (x * z - y * w);
+    m.m[2][1] = 2 * (y * z + x * w);
+    m.m[2][2] = 1 - 2 * (x * x + y * y);
+    m.m[0][3] = p->Position.x;
+    m.m[1][3] = p->Position.y;
+    m.m[2][3] = p->Position.z;
+    return m;
+}
+
+static HmdMatrix34_t matrix_inverse_rigid(const HmdMatrix34_t *a)
+{
+    HmdMatrix34_t r;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            r.m[i][j] = a->m[j][i];
+    for (int i = 0; i < 3; i++)
+        r.m[i][3] = -(r.m[i][0] * a->m[0][3] + r.m[i][1] * a->m[1][3] +
+                      r.m[i][2] * a->m[2][3]);
+    return r;
+}
+
+static HmdMatrix34_t matrix_mul(const HmdMatrix34_t *a, const HmdMatrix34_t *b)
+{
+    HmdMatrix34_t r;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 4; j++) {
+            r.m[i][j] = a->m[i][0] * b->m[0][j] + a->m[i][1] * b->m[1][j] +
+                        a->m[i][2] * b->m[2][j];
+        }
+        r.m[i][3] += a->m[i][3];
+    }
+    return r;
+}
+
 bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
-                           float uMin, float vMin, float uMax, float vMax)
+                           float uMin, float vMin, float uMax, float vMax,
+                           const ovrPosef *render_pose)
 {
     if (!g_active || !d3d11_texture)
         return false;
@@ -340,6 +590,32 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
     }
     tex.eColorSpace = (EColorSpace)cs;
     struct VRTextureBounds_t bounds = {uMin, vMin, uMax, vMax};
+    /* Tell the compositor which head pose the game rendered this eye from.
+     * Without it, reprojection assumes WaitGetPoses' pose, which differs
+     * from the one the game predicted, and the view warps and shifts as
+     * the head moves. LibOVR's RenderPose is the eye's pose; the compositor
+     * wants the HMD's, so remove the eye-to-head offset. */
+    const ovrQuatf *q = render_pose ? &render_pose->Orientation : NULL;
+    if (q && q->x * q->x + q->y * q->y + q->z * q->z + q->w * q->w > 0.5f) {
+        struct VRTextureWithPose_t tp;
+        tp.handle = tex.handle;
+        tp.eType = tex.eType;
+        tp.eColorSpace = tex.eColorSpace;
+        ovrPosef standing = to_standing_space(*render_pose);
+        HmdMatrix34_t eye_world = matrix_from_pose(&standing);
+        HmdMatrix34_t eye_to_head = g_system->GetEyeToHeadTransform((EVREye)eye);
+        HmdMatrix34_t head_to_eye = matrix_inverse_rigid(&eye_to_head);
+        tp.mDeviceToAbsoluteTracking = matrix_mul(&eye_world, &head_to_eye);
+        EVRCompositorError e = g_compositor->Submit(
+            (EVREye)eye, (struct Texture_t *)&tp, &bounds,
+            EVRSubmitFlags_Submit_TextureWithPose);
+        if (e == EVRCompositorError_VRCompositorError_None)
+            return true;
+        static int warned;
+        if (warned++ < 3)
+            LOG("compositor Submit(eye %d, with pose) failed: %d; retrying without",
+                (int)eye, (int)e);
+    }
     EVRCompositorError e = g_compositor->Submit((EVREye)eye, &tex, &bounds,
                                                 EVRSubmitFlags_Submit_Default);
     if (e != EVRCompositorError_VRCompositorError_None)
@@ -363,6 +639,16 @@ void vr_backend_log_compositor_state(long frame)
         g_compositor->GetLastFrameRenderer ? g_compositor->GetLastFrameRenderer() : 0,
         (unsigned long)GetCurrentProcessId(), have ? "" : " (no timing)",
         t.m_nNumFramePresents, t.m_nNumDroppedFrames, t.m_nNumMisPresented);
+    /* Totals since we connected: how often SteamVR had to show an old
+     * frame (dropped) or synthesize one (reprojected) because ours was late. */
+    if (g_compositor->GetCumulativeStats) {
+        struct Compositor_CumulativeStats c;
+        memset(&c, 0, sizeof(c));
+        g_compositor->GetCumulativeStats(&c, sizeof(c));
+        LOG("frame %ld: totals presents=%u dropped=%u reprojected=%u timed-out=%u "
+            "submits=%u", frame, c.m_nNumFramePresents, c.m_nNumDroppedFrames,
+            c.m_nNumReprojectedFrames, c.m_nNumTimedOut, c.m_nNumFrameSubmits);
+    }
 }
 
 void vr_backend_present(void)

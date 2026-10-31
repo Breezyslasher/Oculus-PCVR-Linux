@@ -108,11 +108,14 @@ def _fmt(n: float) -> str:
 
 
 class _Progress:
-    def __init__(self, total: int):
+    def __init__(self, total: int, on_progress=None):
         self.total, self.done, self.start, self.last = total, 0, time.monotonic(), 0.0
+        self.on_progress = on_progress
 
     def add(self, n: int) -> None:
         self.done += n
+        if self.on_progress:
+            self.on_progress(self.done, self.total)
         now = time.monotonic()
         if now - self.last >= 0.5 or self.done >= self.total:
             self.last = now
@@ -123,8 +126,12 @@ class _Progress:
             sys.stderr.flush()
 
 
-def download_build(token: str, build_id: str, dest: Path, workers: int = 8) -> dict:
-    """Download every file of a Rift build into dest. Returns the manifest."""
+def download_build(token: str, build_id: str, dest: Path, workers: int = 8,
+                   on_progress=None) -> dict:
+    """Download every file of a Rift build into dest. Returns the manifest.
+
+    on_progress(done_bytes, total_bytes), if given, is called as data arrives
+    (from the calling thread)."""
     dest.mkdir(parents=True, exist_ok=True)
     manifest = fetch_manifest(token, build_id)
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -143,7 +150,9 @@ def download_build(token: str, build_id: str, dest: Path, workers: int = 8) -> d
     total = sum(int(info.get("size", 0)) for _, _, info in todo)
     print(f"{len(files) - len(todo)} of {len(files)} files already present; "
           f"downloading {len(todo)} ({_fmt(total)})")
-    progress = _Progress(total)
+    progress = _Progress(total, on_progress)
+    if on_progress:
+        on_progress(0, total)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for name, path, info in todo:

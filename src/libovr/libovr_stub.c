@@ -38,9 +38,18 @@ static struct ovrHmdStruct g_hmd;
 #define LOG(...) stub_log("libovr", __VA_ARGS__)
 /* Log the first call of each entry point, so when a game crashes the last
  * line in the log names the call it was in (or the one just before). */
+/* Every export counts its call and records its name, so the stall watchdog
+ * (below) can tell whether the game is still calling us and what it called
+ * last when frames stop. */
+static volatile LONG g_api_calls;
+static const char *volatile g_last_api;
+static void start_stall_watchdog(void);
+
 #define TRACE_FIRST()                                        \
     do {                                                     \
         static LONG once_;                                   \
+        InterlockedIncrement(&g_api_calls);                  \
+        g_last_api = __func__;                               \
         if (!InterlockedExchange(&once_, 1))                 \
             LOG("-> %s", __func__);                          \
     } while (0)
@@ -52,6 +61,7 @@ EXPORT const char ovrstub_build_marker[] = "OVRSTUB-BUILD-MARKER-v1";
 static ovrErrorInfo g_last_error;
 static HANDLE g_hmd_event;
 static int g_initialized;
+EXPORT double ovr_GetTimeInSeconds(void);
 static unsigned g_minor;  /* SDK minor version the game was built against */
 static LARGE_INTEGER g_qpc_freq;
 
@@ -225,6 +235,7 @@ EXPORT ovrResult ovr_Create(ovrSession *session, ovrGraphicsLuid *luid)
     if (session)
         *session = &g_hmd;
     LOG("ovr_Create -> session via OpenVR");
+    start_stall_watchdog();
     return ovrSuccess;
 }
 
@@ -295,18 +306,28 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
 {
     TRACE_FIRST();
     ovrTrackingState s;
-    (void)absTime; (void)latencyMarker;
+    (void)latencyMarker;
     memset(&s, 0, sizeof(s));
+    /* absTime is when the caller wants the pose for (normally the frame's
+     * predicted display time); 0 means "now". Predict that far ahead. */
+    double now = ovr_GetTimeInSeconds();
+    float predict = absTime > 0.0 ? (float)(absTime - now) : 0.0f;
+    if (predict < 0.0f)
+        predict = 0.0f;
+    if (predict > 0.1f)
+        predict = 0.1f;
     s.HeadPose.ThePose.Orientation.w = 1.0f;
     s.CalibratedOrigin.Orientation.w = 1.0f;
     if (session_live(session)) {
-        s.HeadPose = vr_backend_head_pose();
+        s.HeadPose = vr_backend_head_pose(predict);
+        s.HeadPose.TimeInSeconds = now + predict;
         s.StatusFlags = 0x0001 | 0x0002;  /* orientation + position tracked */
         for (int hand = 0; hand < 2; hand++) {
             struct vr_controller c;
             s.HandPoses[hand].ThePose.Orientation.w = 1.0f;
-            if (vr_backend_controller(hand, &c) && c.pose_valid) {
+            if (vr_backend_controller(hand, &c, predict) && c.pose_valid) {
                 s.HandPoses[hand] = c.pose;
+                s.HandPoses[hand].TimeInSeconds = now + predict;
                 s.HandStatusFlags[hand] = 0x0001 | 0x0002;
             }
         }
@@ -429,9 +450,27 @@ EXPORT ovrResult ovr_GetAudioDeviceOutWaveId(unsigned *deviceOutId)
     return ovrSuccess;
 }
 
+/* OVRSTUB_AUDIO_IN=none: report that the headset has no microphone
+ * (ovrError_AudioDeviceNotFound), a test switch. The Eastern Edge's last
+ * call before it freezes at its first level is ovr_GetAudioDeviceInGuid, as
+ * if it then opened the microphone and hung inside audio capture. */
+#define ovrError_AudioDeviceNotFound (-2001)
+static int no_audio_in(void)
+{
+    const char *v = getenv("OVRSTUB_AUDIO_IN");
+    if (!v || strcmp(v, "none"))
+        return 0;
+    static LONG logged;
+    if (!InterlockedExchange(&logged, 1))
+        LOG("OVRSTUB_AUDIO_IN=none: reporting no headset microphone");
+    return 1;
+}
+
 EXPORT ovrResult ovr_GetAudioDeviceInWaveId(unsigned *deviceInId)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!deviceInId)
         return set_error(ovrError_InvalidParameter, "null deviceInId");
     *deviceInId = WAVE_MAPPER;
@@ -451,6 +490,8 @@ EXPORT ovrResult ovr_GetAudioDeviceOutGuidStr(wchar_t *buffer)
 EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!buffer)
         return set_error(ovrError_InvalidParameter, "null buffer");
     default_endpoint_id(eCapture, buffer);
@@ -458,21 +499,53 @@ EXPORT ovrResult ovr_GetAudioDeviceInGuidStr(wchar_t *buffer)
     return ovrSuccess;
 }
 
+/* The device GUID audio engines (DirectSound, and FMOD inside Unity) know
+ * an endpoint by is the trailing {GUID} of its MMDevice id
+ * ("{0.0.0.00000000}.{GUID}"). Unity matches the GUID from
+ * ovr_GetAudioDeviceOutGuid against that list every frame; DirectSound's
+ * "default device" GUID never matches, so it logged an error each frame. */
+static int default_endpoint_guid(int flow, GUID *out)
+{
+    /* OVRSTUB_AUDIO_GUID=default reports DirectSound's generic default
+     * device instead, as builds before ffd414c did (a test switch: The
+     * Eastern Edge's first level started hanging around that change). */
+    const char *mode = getenv("OVRSTUB_AUDIO_GUID");
+    if (mode && !strcmp(mode, "default")) {
+        LOG("OVRSTUB_AUDIO_GUID=default: reporting the generic default %s device",
+            flow == eRender ? "output" : "input");
+        return 0;
+    }
+    wchar_t id[OVR_AUDIO_MAX_DEVICE_STR_SIZE];
+    default_endpoint_id(flow, id);
+    wchar_t *brace = wcsrchr(id, L'{');
+    return brace && SUCCEEDED(CLSIDFromString(brace, out));
+}
+
 EXPORT ovrResult ovr_GetAudioDeviceOutGuid(GUID *guid)
 {
     TRACE_FIRST();
     if (!guid)
         return set_error(ovrError_InvalidParameter, "null guid");
-    *guid = kDsDefaultPlayback;
+    static GUID cached;
+    static int have;
+    if (!have)
+        have = default_endpoint_guid(eRender, &cached) ? 1 : -1;
+    *guid = have > 0 ? cached : kDsDefaultPlayback;
     return ovrSuccess;
 }
 
 EXPORT ovrResult ovr_GetAudioDeviceInGuid(GUID *guid)
 {
     TRACE_FIRST();
+    if (no_audio_in())
+        return set_error(ovrError_AudioDeviceNotFound, "no microphone (OVRSTUB_AUDIO_IN=none)");
     if (!guid)
         return set_error(ovrError_InvalidParameter, "null guid");
-    *guid = kDsDefaultCapture;
+    static GUID cached;
+    static int have;
+    if (!have)
+        have = default_endpoint_guid(eCapture, &cached) ? 1 : -1;
+    *guid = have > 0 ? cached : kDsDefaultCapture;
     return ovrSuccess;
 }
 
@@ -573,9 +646,37 @@ EXPORT ovrEyeRenderDesc ovr_GetRenderDesc2(ovrSession session, ovrEyeType eye,
         return set_error(ovrError_InvalidSession, #name ": no session"); \
     }
 
-NO_SESSION(ovr_SetTrackingOriginType)
-NO_SESSION(ovr_RecenterTrackingOrigin)
-NO_SESSION(ovr_SpecifyTrackingOrigin)
+/* Tracking origin: ovrTrackingOrigin_EyeLevel = 0, FloorLevel = 1. Games
+ * that want floor level say so; the rest expect eye level, LibOVR's
+ * default, and add their own standing height on top. */
+EXPORT ovrResult ovr_SetTrackingOriginType(ovrSession session, int origin)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    if (origin != 0 && origin != 1)
+        return set_error(ovrError_InvalidParameter, "unknown tracking origin");
+    vr_backend_set_origin(origin == 1);
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_RecenterTrackingOrigin(ovrSession session)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    vr_backend_recenter();
+    return ovrSuccess;
+}
+
+EXPORT ovrResult ovr_SpecifyTrackingOrigin(ovrSession session, ovrPosef originPose)
+{
+    TRACE_FIRST();
+    if (!session_live(session))
+        return set_error(ovrError_InvalidSession, "no session");
+    vr_backend_specify_origin(originPose);
+    return ovrSuccess;
+}
 NO_SESSION(ovr_GetDevicePoses)
 NO_SESSION(ovr_SetControllerVibration)
 NO_SESSION(ovr_SubmitControllerVibration)
@@ -796,6 +897,60 @@ static int read_eye_layer(const ovrLayerHeader *h, struct eye_layer *out)
     return 0;
 }
 
+/* Where the game's threads are inside us: nonzero while in SteamVR's
+ * frame wait (WaitGetPoses) or in a frame submission. */
+static volatile LONG g_in_wait, g_in_submit;
+static volatile LONG g_frames_submitted;
+
+static int begin_frame_tracked(void)
+{
+    InterlockedIncrement(&g_in_wait);
+    int ok = vr_backend_begin_frame();
+    InterlockedDecrement(&g_in_wait);
+    return ok;
+}
+
+/* Stall watchdog. If frames stop for 3 s after the game has started
+ * submitting, log what the game is doing with us, every 3 s until frames
+ * resume: still calling the API (and what last), or blocked inside our
+ * frame wait or submission. A game that stops submitting otherwise leaves
+ * no trace in this log. */
+static DWORD WINAPI stall_watchdog(void *arg)
+{
+    (void)arg;
+    LONG last_frames = 0, last_calls = 0;
+    int stalled = 0;
+    for (;;) {
+        Sleep(3000);
+        LONG frames = g_frames_submitted, calls = g_api_calls;
+        if (frames == 0 || frames != last_frames) {
+            if (stalled)
+                LOG("watchdog: frames resumed (frame %ld)", frames);
+            stalled = 0;
+        } else {
+            stalled += 3;
+            LOG("watchdog: no frame for %d s (last frame %ld); %ld API calls since "
+                "last check, last called %s; in SteamVR frame wait: %s; in submit: %s",
+                stalled, frames, calls - last_calls,
+                g_last_api ? g_last_api : "(none)",
+                g_in_wait ? "yes" : "no", g_in_submit ? "yes" : "no");
+        }
+        last_frames = frames;
+        last_calls = calls;
+    }
+    return 0;
+}
+
+static void start_stall_watchdog(void)
+{
+    static LONG started;
+    if (InterlockedExchange(&started, 1))
+        return;
+    HANDLE t = CreateThread(NULL, 0, stall_watchdog, NULL, 0, NULL);
+    if (t)
+        CloseHandle(t);
+}
+
 static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
 {
     int submitted = 0;
@@ -840,7 +995,10 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 vMin = 1.0f - vMin;
                 vMax = 1.0f - vMax;
             }
-            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax))
+            /* EyeMatrix layers keep their RenderPose elsewhere; only use it
+             * from EyeFov / EyeFovDepth. */
+            const ovrPosef *pose = h->Type != 5 ? &l->RenderPose[eye] : NULL;
+            if (vr_backend_submit_eye((ovrEyeType)eye, tex, uMin, vMin, uMax, vMax, pose))
                 submitted++;
         }
     }
@@ -863,8 +1021,31 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                     swapchain_d3d_preclear_next(l->ColorTexture[1]);
             }
         }
-    static LONG frames_;
-    LONG f = InterlockedIncrement(&frames_);
+    LONG f = InterlockedIncrement(&g_frames_submitted);
+    /* Frame pacing: time between submits, summarised every 900 frames. A
+     * game that misses the display's frame time forces SteamVR to
+     * reproject, which looks like judder in the headset only. */
+    static double last_submit, max_gap, sum_gap;
+    static int late, gaps;
+    double t = ovr_GetTimeInSeconds();
+    if (last_submit > 0.0) {
+        double gap = t - last_submit;
+        double budget = 1.0 / vr_backend_display_hz();
+        sum_gap += gap;
+        gaps++;
+        if (gap > max_gap)
+            max_gap = gap;
+        if (gap > budget * 1.5)
+            late++;
+    }
+    last_submit = t;
+    if (f % 900 == 0 && gaps) {
+        LOG("frame %ld: pacing avg %.1f ms, worst %.1f ms, %d of %d frames late "
+            "(budget %.1f ms at %.0f Hz)", f, 1000.0 * sum_gap / gaps, 1000.0 * max_gap,
+            late, gaps, 1000.0 / vr_backend_display_hz(), vr_backend_display_hz());
+        max_gap = sum_gap = 0.0;
+        late = gaps = 0;
+    }
     if (f <= 3 || f % 900 == 0)
         LOG("frame %ld: %u layer(s), %d eye(s) submitted", f, count, submitted);
     if (f == 1 || f == 90 || f == 300 || f % 900 == 0) {
@@ -902,9 +1083,19 @@ EXPORT ovrResult ovr_SubmitFrame(ovrSession session, long long frameIndex,
     (void)frameIndex; (void)viewScaleDesc;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    /* Old single-call frame model: block for poses, submit, present. */
-    vr_backend_begin_frame();
-    return submit_layers(layerPtrList, layerCount);
+    /* Old single-call frame model. SteamVR's loop is WaitGetPoses, render,
+     * Submit; WaitGetPoses must come before the game samples its next pose.
+     * So submit this frame first, then wait for the next frame's slot here,
+     * before returning to the game (waiting first, as before, delivered
+     * every frame a vsync late). The very first frame waits up front. */
+    static LONG waited_once;
+    if (!InterlockedExchange(&waited_once, 1))
+        begin_frame_tracked();
+    InterlockedIncrement(&g_in_submit);
+    ovrResult r = submit_layers(layerPtrList, layerCount);
+    InterlockedDecrement(&g_in_submit);
+    begin_frame_tracked();
+    return r;
 }
 
 EXPORT ovrResult ovr_SubmitFrame2(ovrSession session, long long frameIndex,
@@ -922,7 +1113,7 @@ EXPORT ovrResult ovr_WaitToBeginFrame(ovrSession session, long long frameIndex)
     (void)frameIndex;
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
-    return vr_backend_begin_frame() ? ovrSuccess
+    return begin_frame_tracked() ? ovrSuccess
         : set_error(ovrError_RuntimeException, "WaitGetPoses failed");
 }
 
@@ -945,14 +1136,17 @@ EXPORT ovrResult ovr_EndFrame(ovrSession session, long long frameIndex,
     if (!session_live(session))
         return set_error(ovrError_InvalidSession, "no session");
     /* Split frame model: ovr_WaitToBeginFrame already blocked for poses. */
-    return submit_layers(layerPtrList, layerCount);
+    InterlockedIncrement(&g_in_submit);
+    ovrResult r = submit_layers(layerPtrList, layerCount);
+    InterlockedDecrement(&g_in_submit);
+    return r;
 }
 
 EXPORT int ovr_GetTrackingOriginType(ovrSession session)
 {
     TRACE_FIRST();
     (void)session;
-    return 0;
+    return vr_backend_origin_is_floor();
 }
 
 EXPORT void ovr_ClearShouldRecenterFlag(ovrSession session)
@@ -967,14 +1161,12 @@ EXPORT unsigned ovr_GetConnectedControllerTypes(ovrSession session)
     (void)session;
     unsigned types = 0;
     struct vr_controller c;
-    if (vr_backend_controller(0, &c))
+    if (vr_backend_controller(0, &c, 0.0f))
         types |= ovrControllerType_LTouch;
-    if (vr_backend_controller(1, &c))
+    if (vr_backend_controller(1, &c, 0.0f))
         types |= ovrControllerType_RTouch;
     return types;
 }
-
-EXPORT double ovr_GetTimeInSeconds(void);
 
 /* Radial thumbstick deadzone like LibOVR's, rescaled so it starts at 0. */
 static ovrVector2f stick_deadzone(ovrVector2f v)
@@ -1017,7 +1209,7 @@ EXPORT ovrResult ovr_GetInputState(ovrSession session, int controllerType,
         for (int hand = 0; hand < 2; hand++) {
             unsigned type = hand ? ovrControllerType_RTouch : ovrControllerType_LTouch;
             struct vr_controller c;
-            if (!(controllerType & type) || !vr_backend_controller(hand, &c))
+            if (!(controllerType & type) || !vr_backend_controller(hand, &c, 0.0f))
                 continue;
             st.ControllerType |= type;
             if (c.pressed & VRBIT(VR_BUTTON_A))
@@ -1193,7 +1385,9 @@ EXPORT double ovr_GetPredictedDisplayTime(ovrSession session, long long frameInd
 {
     TRACE_FIRST();
     (void)session; (void)frameIndex;
-    return ovr_GetTimeInSeconds();
+    /* When a frame started now will be on screen, so games predict their
+     * render poses that far ahead (returning "now" made motion lag). */
+    return ovr_GetTimeInSeconds() + vr_backend_seconds_to_photons();
 }
 
 /* ---- Properties: always return the caller's default -------------------- */
@@ -1252,7 +1446,7 @@ EXPORT float ovr_GetFloat(ovrSession s, const char *name, float def)
         return 0.064f;
     /* Seconds per display frame; the real runtime reports the HMD's rate. */
     if (!strcmp(name, "VsyncToNextVsync"))
-        return 1.0f / 90.0f;
+        return 1.0f / vr_backend_display_hz();
     return def;
 }
 
@@ -1348,6 +1542,53 @@ static void log_ovrstub_env(void)
         FreeEnvironmentStringsW(env);
 }
 
+/* Log the Wine/Proton build: Proton's VR bridge only knows the OpenVR
+ * interface versions that existed when it was built, so an older Proton
+ * can connect to SteamVR yet hand back no IVRSystem/IVRCompositor. */
+static void log_wine_version(void)
+{
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const char *(CDECL *version)(void) = NULL, *(CDECL *build)(void) = NULL;
+    if (ntdll) {
+        version = (const char *(CDECL *)(void))(void *)GetProcAddress(ntdll, "wine_get_version");
+        build = (const char *(CDECL *)(void))(void *)GetProcAddress(ntdll, "wine_get_build_id");
+    }
+    if (version)
+        LOG("running on Wine %s (%s)", version(), build ? build() : "unknown build");
+    else
+        LOG("not running on Wine");
+}
+
+/* Unity's newer Oculus XR plugin decides whether Oculus is installed from
+ * HKLM\SOFTWARE\Oculus VR, LLC\Oculus and never starts VR without it (seen
+ * with a Unity 2019+ game: one RegOpenKeyExW -> not found, then nothing).
+ * `ovrl prefix-setup` writes the key, but a prefix Steam made for the game
+ * has none, so add it when missing, in both registry views, with Base
+ * pointing at the folder this shim is in. An existing key is left alone. */
+static void ensure_oculus_registry(HINSTANCE self)
+{
+    wchar_t base[MAX_PATH];
+    DWORD n = GetModuleFileNameW(self, base, MAX_PATH);
+    while (n > 0 && base[n - 1] != L'\\' && base[n - 1] != L'/')
+        n--;
+    base[n] = 0;
+    static const REGSAM views[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+    for (int i = 0; i < 2; i++) {
+        HKEY k;
+        DWORD disp = 0;
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oculus VR, LLC\\Oculus", 0,
+                            NULL, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | views[i], NULL,
+                            &k, &disp) != ERROR_SUCCESS)
+            continue;
+        if (disp == REG_CREATED_NEW_KEY &&
+            RegSetValueExW(k, L"Base", 0, REG_SZ, (const BYTE *)base,
+                           (DWORD)((wcslen(base) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS)
+            LOG("registered HKLM\\SOFTWARE\\Oculus VR, LLC\\Oculus (%s view), Base = %ls",
+                i ? "32-bit" : "64-bit", base);
+        RegCloseKey(k);
+    }
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1355,8 +1596,10 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(inst);
         QueryPerformanceFrequency(&g_qpc_freq);
         LOG("loaded (build %s)", OVRSTUB_BUILD_ID);
+        log_wine_version();
         log_ovrstub_env();
         create_hmd_connected_event();
+        ensure_oculus_registry(inst);
         sigcheck_install();
         redirect_install(inst);
     }

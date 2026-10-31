@@ -18,6 +18,7 @@
  * accessor it calls, and that can be handled per game.
  */
 #include <stdlib.h>
+#include <wchar.h>
 #include <windows.h>
 #include <wincrypt.h>
 #include <wintrust.h>
@@ -143,6 +144,54 @@ static CRYPT_PROVIDER_DATA *WINAPI hook_ProvDataFromStateData(HANDLE h)
     return cpd;
 }
 
+/* Is the signer one of the names Meta signs its runtime with? */
+static int signed_by_meta(CRYPT_PROVIDER_SGNR *cps)
+{
+    static const wchar_t *const names[] = {
+        L"Oculus VR, LLC", L"Facebook Technologies, LLC",
+        L"Meta Platforms Technologies, LLC",
+    };
+    if (!cps->csCertChain || !cps->pasCertChain || !cps->pasCertChain[0].pCert)
+        return 0;
+    wchar_t subject[128];
+    if (!CertGetNameStringW(cps->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                            0, NULL, subject, 128))
+        return 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (!wcscmp(subject, names[i]))
+            return 1;
+    return 0;
+}
+
+/* Is this signer's chain a genuine Meta-signed LibOVR file's, validated by
+ * CryptoAPI with no errors? Decided from the provider data itself rather
+ * than from a WinVerifyTrust call we saw: some loaders (Unity's OVRPlugin)
+ * reach WinVerifyTrust in a way our hook doesn't intercept. The file is
+ * recognised by name when the provider data carries it, else by its signer. */
+static int chain_is_trusted_libovr(CRYPT_PROVIDER_DATA *cpd, CRYPT_PROVIDER_SGNR *cps)
+{
+    if (!cpd || !cps)
+        return 0;
+    LPCWSTR file = verified_file(cpd->pWintrustData);
+    if (!is_libovr_named(file) && !signed_by_meta(cps)) {
+        LOG("not fixing: file %ls is not a Meta-signed LibOVR file",
+            file ? file : L"(unknown)");
+        return 0;
+    }
+    if (!cps->pChainContext) {
+        LOG("not fixing: no certificate chain for %ls", file ? file : L"(unknown)");
+        return 0;
+    }
+    /* Revocation that couldn't be checked offline doesn't make a chain
+     * untrusted (WinVerifyTrust accepts it too); anything else does. */
+    DWORD status = cps->pChainContext->TrustStatus.dwErrorStatus &
+        ~(DWORD)(CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION);
+    if (status != CERT_TRUST_NO_ERROR)
+        LOG("not fixing: LibOVR signer chain has errors (status 0x%lx)",
+            (unsigned long)cps->pChainContext->TrustStatus.dwErrorStatus);
+    return status == CERT_TRUST_NO_ERROR;
+}
+
 static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DATA *cpd,
                                                                DWORD idxSigner,
                                                                BOOL counterSigner,
@@ -159,10 +208,31 @@ static CRYPT_PROVIDER_SGNR *WINAPI hook_GetProvSignerFromChain(CRYPT_PROVIDER_DA
         "(game wants exactly 3)", (unsigned long)idxSigner,
         (unsigned long)cps->csCertChain);
     /* The game's ValidateCertificateContents walks pasCertChain and rejects
-     * any test cert or untrusted self-signed root. Log each cert's flags so
-     * we can see which one it refuses. */
+     * any test cert or untrusted self-signed root. Wine fills in only some
+     * of each entry's fields (it never sets fTestCert, for one), and the
+     * rest can hold leftover heap data: the same genuine runtime that passes
+     * one check then reads as a "test cert" on the next (seen as
+     * fTestCert=4096 dwError=0x10 in Lost, Google Earth VR and Minecraft).
+     * For a LibOVR file whose chain CryptoAPI built with no errors, set those
+     * fields to what Windows reports for that chain: not a test or
+     * commercial-test cert, not revoked, no per-cert error, and self-signed
+     * only where the subject is its own issuer. The certificates themselves
+     * and the trust decision are Wine's, unchanged. */
+    int fix = g_enabled && chain_is_trusted_libovr(cpd, cps);
     for (DWORD i = 0; i < cps->csCertChain && cps->pasCertChain; i++) {
         CRYPT_PROVIDER_CERT *pc = &cps->pasCertChain[i];
+        if (fix && pc->pCert && pc->pCert->pCertInfo) {
+            if (pc->fTestCert || pc->dwError || pc->fCommercial || pc->dwRevokedReason)
+                LOG("  cert[%lu]: clearing uninitialized fields Wine left set "
+                    "(fTestCert=%d dwError=0x%lx)", (unsigned long)i,
+                    (int)pc->fTestCert, (unsigned long)pc->dwError);
+            pc->fCommercial = FALSE;
+            pc->fTestCert = FALSE;
+            pc->dwRevokedReason = 0;
+            pc->dwError = 0;
+            pc->fSelfSigned = CertCompareCertificateName(X509_ASN_ENCODING,
+                &pc->pCert->pCertInfo->Subject, &pc->pCert->pCertInfo->Issuer);
+        }
         LOG("  cert[%lu]: fSelfSigned=%d fTrustedRoot=%d fTestCert=%d "
             "dwError=0x%lx dwConfidence=0x%lx", (unsigned long)i,
             (int)pc->fSelfSigned, (int)pc->fTrustedRoot, (int)pc->fTestCert,
@@ -197,6 +267,11 @@ static void install_trusted_root(void)
         LOG("failed to add DigiCert root to the Root store (error %lu)",
             GetLastError());
     CertCloseStore(store, 0);
+}
+
+int file_is_our_stub(LPCWSTR path)
+{
+    return is_our_stub_file(path);
 }
 
 void sigcheck_install(void)

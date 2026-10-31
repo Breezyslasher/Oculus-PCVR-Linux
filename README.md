@@ -121,8 +121,9 @@ python3 -m ovrl launch "$P" --proton "$PROTON" "$GAME/Game.exe" -hmd=OculusRift
 python3 -m ovrl stubs restore "$GAME"
 ```
 
-Logs go to stderr and to `ovrstub.log` next to the game exe (or wherever
-`OVRSTUB_LOG` points). The `[libovr-trace]` lines show which Oculus files,
+Logs go to stderr and to `ovrstub-<exe name>.log` next to the game exe, e.g.
+`ovrstub-EasternEdge-RC3.log` (or wherever `OVRSTUB_LOG` points;
+`OVRSTUB_LOG=0` turns the file off). The `[libovr-trace]` lines show which Oculus files,
 events and env vars the game looks for, which is the first place to look when
 a new game doesn't reach its menu.
 
@@ -135,10 +136,19 @@ input, on Linux Mint with Proton 11 and a Quest 3 via SteamVR.
 submits frames, but renders black (even flat with `-nohmd`), so that one is
 blocked on the game itself rather than the shim.
 
-Use a Proton at least as new as the one that created the prefix. In the
-tests, Proton 9 failed the game's signature check in a prefix made by Proton
-10; Proton 10 and 11 both pass. `add-to-steam --prefix` picks the version
-recorded in the prefix when Steam has a tool by that name.
+Use a recent Proton (Proton 11 works). Proton's VR bridge only offers the
+SteamVR interface versions that existed when it was built, so with an older
+Proton the game loads the shim but SteamVR hands back no display (the log
+says `could not get OpenVR interfaces`). `add-to-steam` therefore forces the
+Proton chosen in Steam's settings for "all other titles" (else the newest
+numbered one installed); `--proton-tool` overrides it.
+`python3 -m ovrl set-proton` (or **Set Proton for all games** on the page)
+re-applies that to every game added through ovrl, e.g. after changing
+Steam's default. A
+newer Proton also upgrades a prefix an older one made, while the reverse can
+fail (Proton 9 failed the signature check in a Proton 10 prefix). Each
+`ovrstub-<exe name>.log` names the Wine/Proton build it ran on, on its
+second line.
 
 `ovrl launch` runs the game under a bare `proton run`, which is enough to
 reach a menu but leaves Proton's OpenVR bridge (`vrclient`) without the Steam
@@ -187,11 +197,65 @@ in its **Properties**:
   this in when you browse to the exe).
 - **Launch Options**: paste the printed line, e.g.
   `OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "Game.exe" -hmd=OculusRift`
-- **Compatibility**: force the same Proton version you use elsewhere.
+- **Compatibility**: force a recent Proton (Proton 11 works); an older one
+  leaves the game without VR.
 
 Start SteamVR, then launch the entry from your library. Steam wires up the VR
 bridge, Proton loads our shim through the injector, and the shim renders the
 game through SteamVR. Undo with `ovrl stubs restore "$(dirname "$GAME")"`.
+
+## Easy mode: library UI and one-step install
+
+Get the code and build it once (needs `git`, `make` and MinGW, see Build):
+
+```sh
+git clone -b claude/new-session-wtlzfc https://github.com/Breezyslasher/Oculus-PCVR-Linux.git ~/Oculus-PCVR-Linux
+cd ~/Oculus-PCVR-Linux && make
+cd launcher && python3 -m ovrl gui
+```
+
+Everything else happens in the page that opens: paste your access token
+(step 1 above) to log in, set the genuine `LibOVRRT64_1.dll` and your games
+folder in Settings (**Browse…** opens your file dialog), and press **Add to
+app menu** so next time you can start it from your desktop's menu with no
+terminal. **Get latest version & update all games** pulls the newest code,
+rebuilds it and copies the new shim into every installed game. **Quit**
+stops it.
+
+It lists the apps you own and checks each one's newest build, marking it **PC**
+(a Windows .exe), **Quest** (an Android APK) or **not a game**. Quest and Rift
+versions of a game have separate IDs, and only PC games get an Install button.
+Install downloads the game into `games_dir`, detects Unreal or Unity, stages
+the shim beside the exe and adds it to Steam with Proton forced. If Steam is
+running, the game is queued; quit Steam and press **Add queued games to
+Steam**. **Re-copy shim into all games** copies the built shim, injector and
+Platform stub into every installed game again (Meta's genuine DLLs are left
+alone). **Browse…** needs zenity or kdialog.
+
+The page is served only on 127.0.0.1, and actions need a random per-run token
+embedded in the page.
+
+The same works from the terminal:
+
+```sh
+python3 -m ovrl library --check   # mark PC vs Quest
+python3 -m ovrl install <app-id>  # download, stage, add to Steam
+python3 -m ovrl add-queued        # after quitting Steam
+python3 -m ovrl update-shims      # after `git pull && make`
+```
+
+Games downloaded earlier into folders named by store number (e.g.
+`~/Games/VR Oculus/1016967501697367`) can be tidied up: **Organize old
+downloads** on the page (or `python3 -m ovrl organize ~/Games/"VR Oculus"`,
+then again with `--yes`) renames each to the game's name, moves it into
+`games_dir`, repoints its Steam shortcut (keeping its Proton setting) and adds
+it to the installed list. Quit Steam first.
+
+Settings live in `~/.config/ovrl/config.json`; installed games in `games.json`.
+Steam is found in `~/.steam`, `~/.local/share/Steam`, Flatpak and Snap
+locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it
+access to your games folder:
+`flatpak override --user --filesystem=$HOME/Games com.valvesoftware.Steam`.
 
 ## Layout
 

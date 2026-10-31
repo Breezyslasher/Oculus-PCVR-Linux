@@ -148,6 +148,31 @@ def upsert_shortcut(top: list, name: str, exe: str, entry: list) -> str:
     return "added"
 
 
+_PATH_FIELDS = ("Exe", "StartDir", "LaunchOptions", "icon", "ShortcutPath")
+
+
+def rewrite_shortcut_paths(top: list, old: str, new: str) -> list[str]:
+    """Point every shortcut that refers to directory `old` at `new` instead.
+
+    Rewrites the path fields (exe, start dir, launch options, icon) wherever
+    `old` appears as a whole path component, keeping each entry's appid so
+    its Proton mapping and artwork stay attached. Returns the names of the
+    entries changed.
+    """
+    import re
+    pattern = re.compile(re.escape(old.rstrip("/")) + r"(?=[/\\\"' ]|$)")
+    changed = []
+    for item in shortcuts_map(top):
+        hit = False
+        for field in item[2]:
+            if field[0] == _STR and field[1] in _PATH_FIELDS and pattern.search(field[2]):
+                field[2] = pattern.sub(new.rstrip("/").replace("\\", "\\\\"), field[2])
+                hit = True
+        if hit:
+            changed.append(_find(item[2], "AppName") or "?")
+    return changed
+
+
 # ---- text config.vdf -----------------------------------------------------
 
 
@@ -272,6 +297,19 @@ def set_compat_tool(root: dict, appid: int, tool: str) -> None:
     for part in _COMPAT_PATH:
         node = _descend(node, part, create=True)
     node[str(appid)] = {"name": tool, "config": "", "priority": "250"}
+
+
+def default_compat_tool(root: dict) -> str | None:
+    """The Proton the user picked for "all other titles" in Steam's settings
+    (Steam stores it as the mapping for app id 0)."""
+    node = root
+    for part in _COMPAT_PATH:
+        node = _descend(node, part, create=False)
+        if node is None:
+            return None
+    m = node.get("0")
+    name = m.get("name") if isinstance(m, dict) else None
+    return name or None
 
 
 def compat_mappings(root: dict) -> list[dict]:
