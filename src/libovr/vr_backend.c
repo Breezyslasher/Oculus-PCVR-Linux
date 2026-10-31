@@ -575,11 +575,11 @@ static HmdMatrix34_t matrix_mul(const HmdMatrix34_t *a, const HmdMatrix34_t *b)
     return r;
 }
 
-bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
+bool vr_backend_submit_eye(ovrEyeType eye, void *texture, int is_gl,
                            float uMin, float vMin, float uMax, float vMax,
                            const ovrPosef *render_pose)
 {
-    if (!g_active || !d3d11_texture)
+    if (!g_active || !texture)
         return false;
     /* Some games end a frame (ovr_EndFrame) without first waiting for the
      * next one (ovr_WaitToBeginFrame), which is where we call WaitGetPoses.
@@ -594,8 +594,8 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *d3d11_texture,
         vr_backend_begin_frame();
     }
     struct Texture_t tex;
-    tex.handle = d3d11_texture;
-    tex.eType = ETextureType_TextureType_DirectX;
+    tex.handle = texture;
+    tex.eType = is_gl ? ETextureType_TextureType_OpenGL : ETextureType_TextureType_DirectX;
     /* OVRSTUB_COLORSPACE=gamma|linear overrides Auto, for typeless or sRGB
      * textures the compositor may otherwise misread. */
     static int cs = -1;
