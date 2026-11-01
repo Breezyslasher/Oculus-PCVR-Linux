@@ -312,6 +312,24 @@ EXPORT ovrTrackingState ovr_GetTrackingState(ovrSession session, double absTime,
      * predicted display time); 0 means "now". Predict that far ahead. */
     double now = ovr_GetTimeInSeconds();
     float predict = absTime > 0.0 ? (float)(absTime - now) : 0.0f;
+    /* How far ahead games ask us to predict, summarised now and then: too
+     * short or too long a guess shows up as judder in the headset only. */
+    static LONG asks;
+    static float pmin = 1e9f, pmax = -1e9f;
+    static double psum;
+    if (absTime > 0.0) {
+        LONG n = InterlockedIncrement(&asks);
+        if (predict < pmin) pmin = predict;
+        if (predict > pmax) pmax = predict;
+        psum += predict;
+        if (n == 5 || n % 5000 == 0) {
+            LOG("pose prediction: games ask %.1f..%.1f ms ahead (avg %.1f); SteamVR "
+                "says %.1f ms to photons", pmin * 1000.0f, pmax * 1000.0f,
+                psum * 1000.0 / n, vr_backend_seconds_to_photons() * 1000.0);
+            pmin = 1e9f;
+            pmax = -1e9f;
+        }
+    }
     if (predict < 0.0f)
         predict = 0.0f;
     if (predict > 0.1f)
