@@ -308,6 +308,19 @@ never move, freezing the hands):
 OVRSTUB_XR_STRIP=XR_EXT_hand_interaction OVRSTUB_XR_NO_HAND_JOINTS=1 OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "BONELAB_Oculus_Windows64.exe"
 ```
 
+BONELAB's hands staying at the player's waist (buttons working) turned out
+to be SteamVR answering "no controller" when Unity asks once at start which
+interaction profile each hand has; Unity then never attaches the hands to
+the (valid, tracked) controller poses. `OVRSTUB_XR_FORCE_PROFILE=1` makes the
+layer answer Oculus Touch instead (or name another profile path):
+
+```
+OVRSTUB_XR_FORCE_PROFILE=1 OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "BONELAB_Oculus_Windows64.exe"
+```
+
+`OVRSTUB_XR_TRACE=1` logs the pose spaces, reference spaces and interaction
+profiles a game sees, for diagnosing this kind of problem.
+
 The shim writes the layer's manifest
 and registers it in the game's prefix at start-up; the log shows
 `[xr-layer] hiding ...` for each extension removed.

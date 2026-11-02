@@ -25,6 +25,9 @@
  * controllers instead of freezing its hands on joint data that never moves
  * (SteamVR over Steam Link offers hand joints even with hand tracking off).
  *
+ * OVRSTUB_XR_FORCE_PROFILE=1 answers "Oculus Touch" when the runtime says a
+ * hand holds no controller (see forced_profile below); BONELAB needs it.
+ *
  * OVRSTUB_XR_TRACE=1 logs every pose action space the game creates and what
  * xrLocateSpace returns for it (validity flags and position), to see why a
  * game's hands don't follow the controllers.
@@ -330,10 +333,39 @@ static XrResult XRAPI_CALL layer_create_ref_space(XrSession session,
     return r;
 }
 
+typedef XrResult (XRAPI_CALL *PFN_xrStringToPath)(XrInstance, const char *, XrPath *);
+static PFN_xrStringToPath g_string_to_path;
+
+/* OVRSTUB_XR_FORCE_PROFILE: when the runtime says a hand holds no controller
+ * yet ("none"), name this interaction profile instead ("1" means Oculus
+ * Touch). SteamVR over Steam Link answers "none" when Unity asks once at
+ * start; Unity then never attaches the hands to the controller poses. */
+static const char *forced_profile(void)
+{
+    const char *v = getenv("OVRSTUB_XR_FORCE_PROFILE");
+    if (!v || !*v || *v == '0')
+        return NULL;
+    return *v == '/' ? v : "/interaction_profiles/oculus/touch_controller";
+}
+
 static XrResult XRAPI_CALL layer_get_profile(XrSession session, XrPath top,
                                              XrInteractionProfileState *state)
 {
     XrResult r = g_next_get_profile(session, top, state);
+    const char *force = forced_profile();
+    if (r == XR_SUCCESS && state && !state->interactionProfile && force &&
+        g_path_to_string && g_string_to_path) {
+        char who[96] = "";
+        uint32_t n = 0;
+        if (g_path_to_string(g_instance, top, sizeof(who), &n, who) == XR_SUCCESS &&
+            !strncmp(who, "/user/hand/", 11)) {
+            XrPath p = 0;
+            if (g_string_to_path(g_instance, force, &p) == XR_SUCCESS && p) {
+                state->interactionProfile = p;
+                LOG("%s: runtime reports no controller; answering %s", who, force);
+            }
+        }
+    }
     static int logged;
     if (logged < 40 && g_path_to_string) {
         logged++;
@@ -400,6 +432,20 @@ static XrResult XRAPI_CALL layer_gipa(XrInstance instance, const char *name,
     XrResult r = g_next_gipa(instance, name, function);
     if (instance)
         g_instance = instance;
+    if (r == XR_SUCCESS && function && *function && name && forced_profile() && !tracing()) {
+        if (!strcmp(name, "xrGetCurrentInteractionProfile")) {
+            g_next_get_profile = (PFN_xrGetCurrentInteractionProfile)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_get_profile;
+        }
+    }
+    if (r == XR_SUCCESS && name && instance && forced_profile()) {
+        PFN_xrVoidFunction f = NULL;
+        if (!g_string_to_path && g_next_gipa(instance, "xrStringToPath", &f) == XR_SUCCESS)
+            g_string_to_path = (PFN_xrStringToPath)(void *)f;
+        f = NULL;
+        if (!g_path_to_string && g_next_gipa(instance, "xrPathToString", &f) == XR_SUCCESS)
+            g_path_to_string = (PFN_xrPathToString)(void *)f;
+    }
     if (r == XR_SUCCESS && function && *function && name && tracing()) {
         if (!strcmp(name, "xrPathToString"))
             g_path_to_string = (PFN_xrPathToString)(void *)*function;
@@ -488,8 +534,9 @@ EXPORT XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(
     request->layerApiVersion = XR_MAKE_VERSION(1, 0, 0);
     request->getInstanceProcAddr = layer_gipa;
     request->createApiLayerInstance = layer_create_instance;
-    LOG("loaded; hiding: %s%s%s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)",
+    LOG("loaded; hiding: %s%s%s%s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)",
         no_hand_joints() ? "; hand joints reported as not tracked" : "",
-        tracing() ? "; tracing pose actions" : "");
+        tracing() ? "; tracing pose actions" : "",
+        forced_profile() ? "; hands without a controller report Oculus Touch" : "");
     return XR_SUCCESS;
 }

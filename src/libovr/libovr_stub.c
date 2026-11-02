@@ -1864,8 +1864,9 @@ static void register_xr_layer(HINSTANCE self)
     const char *strip = getenv("OVRSTUB_XR_STRIP");
     const char *nojoints = getenv("OVRSTUB_XR_NO_HAND_JOINTS");
     const char *trace = getenv("OVRSTUB_XR_TRACE");
+    const char *force = getenv("OVRSTUB_XR_FORCE_PROFILE");
     int want = (strip && *strip) || (nojoints && *nojoints && *nojoints != '0') ||
-               (trace && *trace && *trace != '0');
+               (trace && *trace && *trace != '0') || (force && *force && *force != '0');
     if (!want)
         return;
     if (!strip || !*strip) {
