@@ -378,6 +378,17 @@ def sync_steam_status() -> dict:
     return all_games
 
 
+def forget_game(app_id: str) -> str:
+    """Remove a game from ovrl's list (its files are not touched)."""
+    with _lock:
+        all_games = games()
+        g = all_games.pop(app_id, None)
+        if g is None:
+            raise LibraryError("no such game")
+        _write("games.json", all_games)
+    return g.get("name", app_id)
+
+
 def add_to_steam(app_ids: list[str] | None = None, log=print) -> list[str]:
     """Add installed games (default: all not yet in Steam) in one write."""
     cfg = load_config()

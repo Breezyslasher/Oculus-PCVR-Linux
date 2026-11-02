@@ -284,6 +284,8 @@ def _post(path: str, body: dict) -> dict:
         if cli._steam_running():
             raise library.LibraryError("quit Steam fully first (Steam > Exit), then try again")
         _run("adding to Steam", library.add_to_steam, None, S.say)
+    elif path == "/api/forget":
+        S.say(f"removed {library.forget_game(str(body.get('app_id') or ''))} from the list")
     elif path == "/api/update-shims":
         _run("updating shims", library.update_shims, S.say)
     elif path == "/api/config":
@@ -381,7 +383,7 @@ function draw(){const s=st;
   return `<tr><td>${esc(a.name)}<div class="mute">${a.id}${a.version?" · newest v"+esc(a.version):""}${g&&g.version?" · installed v"+esc(g.version):""}</div></td><td>${badge(a)}</td><td style="text-align:right">${act}</td></tr>`}).join("")
   :`<tr><td class="mute">${s.apps.length?"No matches.":"Press “Refresh library” to load the games you own."}</td></tr>`;
  const gs=Object.values(s.installed);
- document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.missing?'<span class="badge unk" title="The game files are not at this path any more: reinstall, or use Organize">files missing</span>':g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
+ document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.missing?'<span class="badge unk" title="The game files are not at this path any more: reinstall, or use Organize">files missing</span>':g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap">${g.missing?`<button class="sec" onclick="post('/api/forget',{app_id:'${esc(g.app_id)}'})">Remove from list</button>`:`<button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button>`}</td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
  document.getElementById("addq").disabled=!s.queued.length||s.steam_running;
  if(!s.logged_in)document.getElementById("login").hidden=false;
  document.getElementById("upd").disabled=!s.has_git||!!s.busy;
