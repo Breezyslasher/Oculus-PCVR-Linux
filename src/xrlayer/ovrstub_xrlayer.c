@@ -266,7 +266,9 @@ static XrResult XRAPI_CALL layer_locate_space(XrSpace space, XrSpace base, XrTim
         if (g_traced[i].space != space)
             continue;
         long c = ++g_traced[i].calls;
-        if (c <= 3 || c % 900 == 0)
+        /* About once a second for the grip pose, so hand movement shows. */
+        int every = strncmp(g_traced[i].hand, "devicepose", 10) ? 900 : 90;
+        if (c <= 3 || c % every == 0)
             LOG("xrLocateSpace(%s in %s, call %ld) -> %d flags 0x%llx (orient %s%s, pos %s%s) "
                 "pos (%.2f %.2f %.2f)", g_traced[i].hand, ref_name(base), c, (int)r,
                 loc ? (unsigned long long)loc->locationFlags : 0ULL,
