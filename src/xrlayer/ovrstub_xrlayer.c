@@ -253,6 +253,8 @@ static XrResult XRAPI_CALL layer_create_action_space(XrSession session,
     return r;
 }
 
+static const char *ref_name(XrSpace s);
+
 static XrResult XRAPI_CALL layer_locate_space(XrSpace space, XrSpace base, XrTime time,
                                               XrSpaceLocation *loc)
 {
@@ -262,8 +264,8 @@ static XrResult XRAPI_CALL layer_locate_space(XrSpace space, XrSpace base, XrTim
             continue;
         long c = ++g_traced[i].calls;
         if (c <= 3 || c % 900 == 0)
-            LOG("xrLocateSpace(%s, call %ld) -> %d flags 0x%llx (orient %s%s, pos %s%s) "
-                "pos (%.2f %.2f %.2f)", g_traced[i].hand, c, (int)r,
+            LOG("xrLocateSpace(%s in %s, call %ld) -> %d flags 0x%llx (orient %s%s, pos %s%s) "
+                "pos (%.2f %.2f %.2f)", g_traced[i].hand, ref_name(base), c, (int)r,
                 loc ? (unsigned long long)loc->locationFlags : 0ULL,
                 loc && (loc->locationFlags & 1) ? "valid" : "INVALID",
                 loc && (loc->locationFlags & 4) ? "+tracked" : "",
@@ -272,6 +274,75 @@ static XrResult XRAPI_CALL layer_locate_space(XrSpace space, XrSpace base, XrTim
                 loc ? loc->pose.position.x : 0.0f, loc ? loc->pose.position.y : 0.0f,
                 loc ? loc->pose.position.z : 0.0f);
         break;
+    }
+    return r;
+}
+
+/* Reference spaces (what xrLocateSpace measures from) and the runtime's
+ * idea of which controller each hand holds. */
+typedef struct {
+    XrStructureType type;
+    const void *next;
+    int32_t referenceSpaceType;   /* 1 VIEW, 2 LOCAL, 3 STAGE, ... */
+    XrPosef poseInReferenceSpace;
+} XrReferenceSpaceCreateInfo;
+typedef struct {
+    XrStructureType type;
+    void *next;
+    XrPath interactionProfile;
+} XrInteractionProfileState;
+typedef XrResult (XRAPI_CALL *PFN_xrCreateReferenceSpace)(XrSession, const XrReferenceSpaceCreateInfo *,
+                                                          XrSpace *);
+typedef XrResult (XRAPI_CALL *PFN_xrGetCurrentInteractionProfile)(XrSession, XrPath,
+                                                                  XrInteractionProfileState *);
+static PFN_xrCreateReferenceSpace g_next_create_ref_space;
+static PFN_xrGetCurrentInteractionProfile g_next_get_profile;
+#define MAX_REFS 64
+static struct { XrSpace space; int type; } g_refs[MAX_REFS];
+static int g_nrefs;
+
+static const char *ref_name(XrSpace s)
+{
+    static const char *names[] = {"?", "VIEW", "LOCAL", "STAGE"};
+    for (int i = 0; i < g_nrefs; i++)
+        if (g_refs[i].space == s) {
+            int t = g_refs[i].type;
+            return t >= 1 && t <= 3 ? names[t] : "other";
+        }
+    return "not a reference space";
+}
+
+static XrResult XRAPI_CALL layer_create_ref_space(XrSession session,
+                                                  const XrReferenceSpaceCreateInfo *info,
+                                                  XrSpace *space)
+{
+    XrResult r = g_next_create_ref_space(session, info, space);
+    if (r == XR_SUCCESS && info && space && g_nrefs < MAX_REFS) {
+        g_refs[g_nrefs].space = *space;
+        g_refs[g_nrefs].type = info->referenceSpaceType;
+        g_nrefs++;
+        LOG("xrCreateReferenceSpace(type %d%s) offset (%.2f %.2f %.2f)", info->referenceSpaceType,
+            info->referenceSpaceType == 1 ? " VIEW" : info->referenceSpaceType == 2 ? " LOCAL" :
+            info->referenceSpaceType == 3 ? " STAGE" : "",
+            info->poseInReferenceSpace.position.x, info->poseInReferenceSpace.position.y,
+            info->poseInReferenceSpace.position.z);
+    }
+    return r;
+}
+
+static XrResult XRAPI_CALL layer_get_profile(XrSession session, XrPath top,
+                                             XrInteractionProfileState *state)
+{
+    XrResult r = g_next_get_profile(session, top, state);
+    static int logged;
+    if (logged < 40 && g_path_to_string) {
+        logged++;
+        char who[96] = "?", what[160] = "(none)";
+        uint32_t n = 0;
+        g_path_to_string(g_instance, top, sizeof(who), &n, who);
+        if (r == XR_SUCCESS && state && state->interactionProfile)
+            g_path_to_string(g_instance, state->interactionProfile, sizeof(what), &n, what);
+        LOG("xrGetCurrentInteractionProfile(%s) -> %d: %s", who, (int)r, what);
     }
     return r;
 }
@@ -337,7 +408,13 @@ static XrResult XRAPI_CALL layer_gipa(XrInstance instance, const char *name,
             if (seen++ < 8)
                 LOG("game looked up %s", name);
         }
-        if (!strcmp(name, "xrCreateAction")) {
+        if (!strcmp(name, "xrCreateReferenceSpace")) {
+            g_next_create_ref_space = (PFN_xrCreateReferenceSpace)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_create_ref_space;
+        } else if (!strcmp(name, "xrGetCurrentInteractionProfile")) {
+            g_next_get_profile = (PFN_xrGetCurrentInteractionProfile)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_get_profile;
+        } else if (!strcmp(name, "xrCreateAction")) {
             g_next_create_action = (PFN_xrCreateAction)(void *)*function;
             *function = (PFN_xrVoidFunction)(void *)layer_create_action;
         } else if (!strcmp(name, "xrCreateActionSpace")) {
