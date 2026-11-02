@@ -29,6 +29,9 @@ DEFAULT_BUILD = REPO_ROOT / "build"
 PLATFORM_DLL = "LibOVRPlatform64_1.dll"
 RUNTIME_DLL = "LibOVRRT64_1.dll"
 INJECTOR = "ovrinject.exe"
+# OpenXR layer the shim registers when OVRSTUB_XR_STRIP is set (+ its manifest).
+XR_LAYER = "ovrstub_xrlayer.dll"
+XR_LAYER_MANIFEST = "ovrstub_xrlayer.json"
 BACKUP_SUFFIX = ".ovrl-orig"
 # The shim is injected under its own name so it never overwrites the genuine
 # LibOVRRT64_1.dll that the game's signature check reads from disk.
@@ -86,7 +89,7 @@ def _install_file(src: Path, target: Path, label: str) -> None:
     backup = target.with_name(target.name + BACKUP_SUFFIX)
     # The injector and shim are ours alone (no game ships them), so a
     # previous copy is never an original worth keeping.
-    ours = target.name in (INJECTOR, SHIM_INJECT_NAME, PLATFORM_INJECT_NAME)
+    ours = target.name in (INJECTOR, SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, XR_LAYER)
     if target.exists() and not backup.exists() and not ours and not _is_our_stub(target):
         shutil.copy2(target, backup)
         print(f"backed up original to {backup}")
@@ -104,7 +107,7 @@ def links_platform_statically(game_dir: Path) -> bool:
         if f.suffix.lower() not in (".exe", ".dll") or not f.is_file():
             continue
         if f.name in (RUNTIME_DLL, PLATFORM_DLL, INJECTOR, SHIM_INJECT_NAME,
-                      PLATFORM_INJECT_NAME) or f.name.endswith(BACKUP_SUFFIX):
+                      PLATFORM_INJECT_NAME, XR_LAYER) or f.name.endswith(BACKUP_SUFFIX):
             continue
         try:
             if PLATFORM_DLL.lower() in pe.imports(f):
@@ -150,7 +153,8 @@ def _restore_dir(game_dir: Path) -> bool:
             restored = True
     # The injector and the distinctly-named shim are ours alone; a game never
     # ships them, so remove them by name.
-    for name in (SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, INJECTOR, IDENTITY_FILE):
+    for name in (SHIM_INJECT_NAME, PLATFORM_INJECT_NAME, INJECTOR, IDENTITY_FILE,
+                 XR_LAYER, XR_LAYER_MANIFEST):
         target = game_dir / name
         if target.is_file():
             target.unlink()
@@ -722,6 +726,8 @@ def stage_game(exe: Path, build: Path, real_runtime: str | None,
     _install_file(_build_file(build, PLATFORM_DLL), exe_dir / PLATFORM_INJECT_NAME,
                   "Platform stub")
     _install_file(_build_file(build, INJECTOR), exe_dir / INJECTOR, "injector")
+    if (build / XR_LAYER).is_file():
+        _install_file(build / XR_LAYER, exe_dir / XR_LAYER, "OpenXR layer")
     if write_identity(exe_dir):
         log(f"wrote your Meta identity to {exe_dir / IDENTITY_FILE}")
     found = _find_openvr_api(openvr)

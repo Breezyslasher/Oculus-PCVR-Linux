@@ -17,8 +17,9 @@ COMMON  := src/common/log.c
 PLATFORM_DLL := $(BUILD)/LibOVRPlatform64_1.dll
 LIBOVR_DLL   := $(BUILD)/LibOVRRT64_1.dll
 INJECTOR     := $(BUILD)/ovrinject.exe
+XR_LAYER     := $(BUILD)/ovrstub_xrlayer.dll
 
-all: $(PLATFORM_DLL) $(LIBOVR_DLL) $(INJECTOR)
+all: $(PLATFORM_DLL) $(LIBOVR_DLL) $(INJECTOR) $(XR_LAYER)
 
 TESTS := $(BUILD)/test_platform.exe $(BUILD)/test_libovr_loader.exe
 
@@ -34,6 +35,9 @@ LIBOVR_INC := -Ithird_party/openvr
 
 $(LIBOVR_DLL): $(LIBOVR_SRC) src/libovr/*.h $(COMMON) | $(BUILD)
 	$(CC) $(CFLAGS) $(LIBOVR_INC) -shared -o $@ $(LIBOVR_SRC) $(COMMON) $(LDFLAGS) -lwintrust -lcrypt32 -lole32 -lwinmm -ldxgi
+
+$(XR_LAYER): src/xrlayer/ovrstub_xrlayer.c $(COMMON) | $(BUILD)
+	$(CC) $(CFLAGS) -shared -o $@ src/xrlayer/ovrstub_xrlayer.c $(COMMON) $(LDFLAGS)
 
 $(INJECTOR): src/injector/ovrinject.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lshell32

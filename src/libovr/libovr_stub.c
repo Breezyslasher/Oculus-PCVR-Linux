@@ -1854,6 +1854,64 @@ static void ensure_oculus_registry(HINSTANCE self)
     }
 }
 
+/* With OVRSTUB_XR_STRIP set, make the OpenXR loader in this game pick up
+ * our ovrstub_xrlayer.dll (beside this DLL): write its manifest next to it
+ * and list that as an implicit API layer in the prefix's registry. The
+ * manifest's enable_environment keeps the layer off for games launched
+ * without the variable. */
+static void register_xr_layer(HINSTANCE self)
+{
+    const char *strip = getenv("OVRSTUB_XR_STRIP");
+    if (!strip || !*strip)
+        return;
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')
+        n--;
+    if (n + 32 >= MAX_PATH)
+        return;
+    wcscpy(path + n, L"ovrstub_xrlayer.dll");
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+        LOG("OVRSTUB_XR_STRIP is set but %ls is missing; OpenXR extensions "
+            "are left alone", path);
+        return;
+    }
+    wcscpy(path + n, L"ovrstub_xrlayer.json");
+    static const char manifest[] =
+        "{\n"
+        "  \"file_format_version\": \"1.0.0\",\n"
+        "  \"api_layer\": {\n"
+        "    \"name\": \"XR_APILAYER_OVRSTUB_strip_extensions\",\n"
+        "    \"library_path\": \"ovrstub_xrlayer.dll\",\n"
+        "    \"api_version\": \"1.0\",\n"
+        "    \"implementation_version\": \"1\",\n"
+        "    \"description\": \"Hides the OpenXR extensions named in OVRSTUB_XR_STRIP\",\n"
+        "    \"enable_environment\": \"OVRSTUB_XR_STRIP\",\n"
+        "    \"disable_environment\": \"OVRSTUB_XR_LAYER_DISABLE\"\n"
+        "  }\n"
+        "}\n";
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        LOG("couldn't write %ls (error %lu)", path, GetLastError());
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(f, manifest, sizeof(manifest) - 1, &written, NULL);
+    CloseHandle(f);
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+                        0, NULL, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &k,
+                        NULL) != ERROR_SUCCESS) {
+        LOG("couldn't open the OpenXR implicit layer registry key");
+        return;
+    }
+    DWORD zero = 0;
+    RegSetValueExW(k, path, 0, REG_DWORD, (const BYTE *)&zero, sizeof(zero));
+    RegCloseKey(k);
+    LOG("OpenXR layer registered (%ls); hiding: %s", path, strip);
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1865,6 +1923,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         log_ovrstub_env();
         create_hmd_connected_event();
         ensure_oculus_registry(inst);
+        register_xr_layer(inst);
         sigcheck_install();
         redirect_install(inst);
     }

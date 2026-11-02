@@ -448,6 +448,8 @@ def update_shims(log=print) -> list[str]:
         cli._install_file(shim, exe_dir / cli.SHIM_INJECT_NAME, "shim")
         cli._install_file(injector, exe_dir / cli.INJECTOR, "injector")
         cli._install_file(platform, exe_dir / cli.PLATFORM_INJECT_NAME, "Platform stub")
+        if (build / cli.XR_LAYER).is_file():
+            cli._install_file(build / cli.XR_LAYER, exe_dir / cli.XR_LAYER, "OpenXR layer")
         cli.write_identity(exe_dir)
         for name, src in ((cli.PLATFORM_DLL, platform), (cli.RUNTIME_DLL, shim)):
             target = exe_dir / name

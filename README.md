@@ -284,6 +284,23 @@ locations (or pass `--steam-root` to `setup`). With Flatpak Steam, grant it
 access to your games folder:
 `flatpak override --user --filesystem=$HOME/Games com.valvesoftware.Steam`.
 
+### OpenXR games: hiding extensions (`OVRSTUB_XR_STRIP`)
+
+Some Rift-store games (BONELAB, Zenith) render through OpenXR, which on
+Linux means SteamVR's runtime rather than Meta's. A few OpenXR extensions
+behave differently there. `ovrstub_xrlayer.dll`, copied beside the shim,
+is a small OpenXR API layer that removes the extensions you name from the
+game's `xrCreateInstance`. It only loads for a game whose launch options set
+the variable, for example BONELAB with its hands stuck at the player's sides:
+
+```
+OVRSTUB_XR_STRIP=XR_EXT_hand_interaction OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "BONELAB_Oculus_Windows64.exe"
+```
+
+Separate several names with commas. The shim writes the layer's manifest
+and registers it in the game's prefix at start-up; the log shows
+`[xr-layer] hiding ...` for each extension removed.
+
 ## Layout
 
 ```
