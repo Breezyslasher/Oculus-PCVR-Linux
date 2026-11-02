@@ -3,12 +3,13 @@
  * (LibOVRPlatform64_1.dll) that the stub implements.
  *
  * These are written from the public API reference, not copied from the SDK
- * headers. Message type IDs in particular are UNVERIFIED: they are hash-like
- * constants from OVR_MessageType.h, and a wrong value means the game never
- * recognizes our reply. Each one can be overridden at runtime with an
- * environment variable (see message_type() in ovr_platform_stub.c), and should
- * be checked against a real copy of OVR_MessageType.h or the MessageType enum
- * in a Unity game's Managed/Oculus.Platform.dll (e.g. with ilspycmd).
+ * headers. Message type IDs are hash-like constants; a wrong value means the
+ * game never recognizes our reply. The ones below were checked against the
+ * type-to-name table (ovrMessageType_ToString) in Meta's Platform runtime.
+ * The Windows async-init type has no entry there; its value is the one
+ * Meta's runtime posts alongside its other initialization replies. Each can
+ * still be overridden at runtime with an environment variable (see
+ * message_type() in ovr_platform_stub.c).
  */
 #ifndef OVRSTUB_PLATFORM_TYPES_H
 #define OVRSTUB_PLATFORM_TYPES_H
@@ -40,11 +41,11 @@ typedef enum ovrPlatformInitializeResult {
     ovrPlatformInitialize_NotEntitled = -9,
 } ovrPlatformInitializeResult;
 
-/* UNVERIFIED defaults; override with OVRSTUB_MSGTYPE_<NAME>=0x... */
+/* Override any of these with OVRSTUB_MSGTYPE_<NAME>=0x... */
 #define MSGTYPE_ENTITLEMENT_GET_IS_VIEWER_ENTITLED   0x186B58B1u
 #define MSGTYPE_USER_GET_LOGGED_IN_USER              0x436F345Du
 #define MSGTYPE_USER_GET                             0x6BCF9E47u
-#define MSGTYPE_PLATFORM_INITIALIZE_WINDOWS_ASYNC    0x00000000u /* unknown */
+#define MSGTYPE_PLATFORM_INITIALIZE_WINDOWS_ASYNC    0x6DA7BA8Fu
 #define MSGTYPE_ACHIEVEMENTS_ADD_COUNT               0x03E76231u
 #define MSGTYPE_ACHIEVEMENTS_ADD_FIELDS              0x14AA2129u
 #define MSGTYPE_ACHIEVEMENTS_GET_ALL_DEFINITIONS     0x03D3458Du
