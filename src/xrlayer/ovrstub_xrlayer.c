@@ -25,6 +25,10 @@
  * controllers instead of freezing its hands on joint data that never moves
  * (SteamVR over Steam Link offers hand joints even with hand tracking off).
  *
+ * OVRSTUB_XR_TRACE=1 logs every pose action space the game creates and what
+ * xrLocateSpace returns for it (validity flags and position), to see why a
+ * game's hands don't follow the controllers.
+ *
  * The shim registers this layer as an implicit layer in the game's Wine
  * prefix (see register_xr_layer in libovr_stub.c); its manifest sets
  * enable_environment to OVRSTUB_XR_STRIP, so the loader only loads it for
@@ -149,6 +153,92 @@ typedef XrResult (XRAPI_CALL *PFN_xrLocateHandJointsEXT)(XrHandTrackerEXT, const
                                                          XrHandJointLocationsEXT *);
 static PFN_xrLocateHandJointsEXT g_next_locate_joints;
 
+/* ---- OVRSTUB_XR_TRACE=1: log what the runtime answers for pose actions --- */
+typedef uint64_t XrSpace;
+typedef uint64_t XrAction;
+typedef uint64_t XrPath;
+typedef uint64_t XrSession;
+typedef int64_t XrTime;
+typedef struct { float x, y, z, w; } XrQuaternionf;
+typedef struct { float x, y, z; } XrVector3f;
+typedef struct { XrQuaternionf orientation; XrVector3f position; } XrPosef;
+typedef struct {
+    XrStructureType type;
+    const void *next;
+    XrAction action;
+    XrPath subactionPath;
+    XrPosef poseInActionSpace;
+} XrActionSpaceCreateInfo;
+typedef struct {
+    XrStructureType type;
+    void *next;
+    uint64_t locationFlags;
+    XrPosef pose;
+} XrSpaceLocation;
+typedef XrResult (XRAPI_CALL *PFN_xrCreateActionSpace)(XrSession, const XrActionSpaceCreateInfo *,
+                                                       XrSpace *);
+typedef XrResult (XRAPI_CALL *PFN_xrLocateSpace)(XrSpace, XrSpace, XrTime, XrSpaceLocation *);
+typedef XrResult (XRAPI_CALL *PFN_xrPathToString)(XrInstance, XrPath, uint32_t, uint32_t *, char *);
+static PFN_xrCreateActionSpace g_next_create_action_space;
+static PFN_xrLocateSpace g_next_locate_space;
+static PFN_xrPathToString g_path_to_string;
+static XrInstance g_instance;
+
+#define MAX_TRACED 16
+static struct { XrSpace space; char hand[96]; long calls; } g_traced[MAX_TRACED];
+static int g_ntraced;
+
+static int tracing(void)
+{
+    const char *v = getenv("OVRSTUB_XR_TRACE");
+    return v && *v && *v != '0';
+}
+
+static XrResult XRAPI_CALL layer_create_action_space(XrSession session,
+                                                     const XrActionSpaceCreateInfo *info,
+                                                     XrSpace *space)
+{
+    XrResult r = g_next_create_action_space(session, info, space);
+    char hand[96] = "(no subaction path)";
+    if (info && info->subactionPath && g_path_to_string) {
+        uint32_t n = 0;
+        if (g_path_to_string(g_instance, info->subactionPath, sizeof(hand), &n, hand) != XR_SUCCESS)
+            strcpy(hand, "?");
+    }
+    LOG("xrCreateActionSpace(action %llx, %s) -> %d, space %llx",
+        info ? (unsigned long long)info->action : 0ULL, hand, (int)r,
+        space ? (unsigned long long)*space : 0ULL);
+    if (r == XR_SUCCESS && space && g_ntraced < MAX_TRACED) {
+        g_traced[g_ntraced].space = *space;
+        snprintf(g_traced[g_ntraced].hand, sizeof(g_traced[0].hand), "%s", hand);
+        g_ntraced++;
+    }
+    return r;
+}
+
+static XrResult XRAPI_CALL layer_locate_space(XrSpace space, XrSpace base, XrTime time,
+                                              XrSpaceLocation *loc)
+{
+    XrResult r = g_next_locate_space(space, base, time, loc);
+    for (int i = 0; i < g_ntraced; i++) {
+        if (g_traced[i].space != space)
+            continue;
+        long c = ++g_traced[i].calls;
+        if (c <= 3 || c % 900 == 0)
+            LOG("xrLocateSpace(%s, call %ld) -> %d flags 0x%llx (orient %s%s, pos %s%s) "
+                "pos (%.2f %.2f %.2f)", g_traced[i].hand, c, (int)r,
+                loc ? (unsigned long long)loc->locationFlags : 0ULL,
+                loc && (loc->locationFlags & 1) ? "valid" : "INVALID",
+                loc && (loc->locationFlags & 4) ? "+tracked" : "",
+                loc && (loc->locationFlags & 2) ? "valid" : "INVALID",
+                loc && (loc->locationFlags & 8) ? "+tracked" : "",
+                loc ? loc->pose.position.x : 0.0f, loc ? loc->pose.position.y : 0.0f,
+                loc ? loc->pose.position.z : 0.0f);
+        break;
+    }
+    return r;
+}
+
 static int no_hand_joints(void)
 {
     const char *v = getenv("OVRSTUB_XR_NO_HAND_JOINTS");
@@ -200,6 +290,24 @@ static XrResult XRAPI_CALL layer_gipa(XrInstance instance, const char *name,
         return instance ? XR_ERROR_HANDLE_INVALID : XR_ERROR_FUNCTION_UNSUPPORTED;
     }
     XrResult r = g_next_gipa(instance, name, function);
+    if (instance)
+        g_instance = instance;
+    if (r == XR_SUCCESS && function && *function && name && tracing()) {
+        if (!strcmp(name, "xrPathToString"))
+            g_path_to_string = (PFN_xrPathToString)(void *)*function;
+        if (!strcmp(name, "xrCreateActionSpace")) {
+            g_next_create_action_space = (PFN_xrCreateActionSpace)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_create_action_space;
+        } else if (!strcmp(name, "xrLocateSpace")) {
+            g_next_locate_space = (PFN_xrLocateSpace)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_locate_space;
+        }
+        if (!g_path_to_string && instance) {
+            PFN_xrVoidFunction f = NULL;
+            if (g_next_gipa(instance, "xrPathToString", &f) == XR_SUCCESS)
+                g_path_to_string = (PFN_xrPathToString)(void *)f;
+        }
+    }
     if (r == XR_SUCCESS && function && *function && name &&
         !strcmp(name, "xrLocateHandJointsEXT") && no_hand_joints()) {
         g_next_locate_joints = (PFN_xrLocateHandJointsEXT)(void *)*function;
@@ -258,7 +366,8 @@ EXPORT XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(
     request->layerApiVersion = XR_MAKE_VERSION(1, 0, 0);
     request->getInstanceProcAddr = layer_gipa;
     request->createApiLayerInstance = layer_create_instance;
-    LOG("loaded; hiding: %s%s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)",
-        no_hand_joints() ? "; hand joints reported as not tracked" : "");
+    LOG("loaded; hiding: %s%s%s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)",
+        no_hand_joints() ? "; hand joints reported as not tracked" : "",
+        tracing() ? "; tracing pose actions" : "");
     return XR_SUCCESS;
 }
