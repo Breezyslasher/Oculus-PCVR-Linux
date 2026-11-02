@@ -9,8 +9,29 @@
 #include "../common/log.h"
 
 #define LOG(...) stub_log("swapchain", __VA_ARGS__)
-#define MAX_CHAIN_LENGTH 3
+#define MAX_CHAIN_LENGTH 4
 #define MAX_LIVE_CHAINS 64
+
+/* Buffers per swap chain. The Oculus runtime gives games three; with two,
+ * a game starts drawing over an image two frames after handing it in,
+ * while SteamVR (under Proton, and Steam Link's encoder) may still be
+ * reading or reprojecting it: half-new frames, felt as judder in the
+ * headset only. OVRSTUB_CHAIN_LENGTH=2..4 overrides, to compare. */
+static int chain_length(const ovrTextureSwapChainDesc *desc)
+{
+    if (desc->StaticImage)
+        return 1;
+    static int n = -1;
+    if (n < 0) {
+        const char *v = getenv("OVRSTUB_CHAIN_LENGTH");
+        n = v ? atoi(v) : 3;
+        if (n < 2 || n > MAX_CHAIN_LENGTH)
+            n = 3;
+        if (v)
+            LOG("OVRSTUB_CHAIN_LENGTH: %d buffers per swap chain", n);
+    }
+    return n;
+}
 
 struct ovrTextureSwapChainData {
     ID3D11Texture2D *textures[MAX_CHAIN_LENGTH];
@@ -115,7 +136,7 @@ ovrTextureSwapChain swapchain_d3d_create(void *d3d_device,
     struct ovrTextureSwapChainData *c = calloc(1, sizeof(*c));
     if (!c)
         return NULL;
-    c->length = desc->StaticImage ? 1 : 2;
+    c->length = chain_length(desc);
     if (c->length > MAX_CHAIN_LENGTH)
         c->length = MAX_CHAIN_LENGTH;
     c->index = 0;
@@ -286,7 +307,7 @@ ovrTextureSwapChain swapchain_gl_create(const ovrTextureSwapChainDesc *desc)
     if (!c)
         return NULL;
     c->gl = 1;
-    c->length = desc->StaticImage ? 1 : 2;
+    c->length = chain_length(desc);
     c->committed = -1;
     c->width = desc->Width;
     c->height = desc->Height;
