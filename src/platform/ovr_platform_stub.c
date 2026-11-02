@@ -498,6 +498,71 @@ EXPORT const char *ovr_AchievementUpdate_GetName(void *u)
     return "";
 }
 
+/* ---- Access token, friends, purchases ------------------------------------
+ * Asked for at start-up by Unreal games (Asgard's Wrath retries the token
+ * request until it gets an answer, then quits). The token is answered with
+ * an empty string: games get no credential to send anywhere (the stub never
+ * hands out your Meta login). Friends and purchases are empty lists. */
+
+EXPORT ovrRequest ovr_User_GetAccessToken(void)
+{
+    return post_reply(message_type("USER_GET_ACCESS_TOKEN", MSGTYPE_USER_GET_ACCESS_TOKEN),
+                      NULL, __func__);
+}
+
+EXPORT ovrRequest ovr_User_GetLoggedInUserFriends(void)
+{
+    return post_reply(message_type("USER_GET_LOGGED_IN_USER_FRIENDS",
+                                   MSGTYPE_USER_GET_LOGGED_IN_USER_FRIENDS), NULL, __func__);
+}
+
+EXPORT ovrRequest ovr_User_GetNextUserArrayPage(void *handle)
+{
+    (void)handle;
+    return post_reply(message_type("USER_GET_NEXT_USER_ARRAY_PAGE",
+                                   MSGTYPE_USER_GET_NEXT_USER_ARRAY_PAGE), NULL, __func__);
+}
+
+EXPORT ovrRequest ovr_IAP_GetViewerPurchases(void)
+{
+    return post_reply(message_type("IAP_GET_VIEWER_PURCHASES", MSGTYPE_IAP_GET_VIEWER_PURCHASES),
+                      NULL, __func__);
+}
+
+EXPORT ovrRequest ovr_IAP_GetViewerPurchasesDurableCache(void)
+{
+    return post_reply(message_type("IAP_GET_VIEWER_PURCHASES_DURABLE",
+                                   MSGTYPE_IAP_GET_VIEWER_PURCHASES_DURABLE), NULL, __func__);
+}
+
+EXPORT ovrRequest ovr_IAP_GetNextPurchaseArrayPage(void *handle)
+{
+    (void)handle;
+    return post_reply(message_type("IAP_GET_NEXT_PURCHASE_ARRAY_PAGE",
+                                   MSGTYPE_IAP_GET_NEXT_PURCHASE_ARRAY_PAGE), NULL, __func__);
+}
+
+EXPORT void *ovr_Message_GetUserArray(ovrMessageHandle m)
+{
+    (void)m;
+    return &g_empty_array;
+}
+
+EXPORT void *ovr_Message_GetPurchaseArray(ovrMessageHandle m)
+{
+    (void)m;
+    return &g_empty_array;
+}
+
+EXPORT size_t ovr_UserArray_GetSize(void *a) { (void)a; return 0; }
+EXPORT void *ovr_UserArray_GetElement(void *a, size_t i) { (void)a; (void)i; return NULL; }
+EXPORT bool ovr_UserArray_HasNextPage(void *a) { (void)a; return false; }
+EXPORT const char *ovr_UserArray_GetNextUrl(void *a) { (void)a; return ""; }
+EXPORT size_t ovr_PurchaseArray_GetSize(void *a) { (void)a; return 0; }
+EXPORT void *ovr_PurchaseArray_GetElement(void *a, size_t i) { (void)a; (void)i; return NULL; }
+EXPORT bool ovr_PurchaseArray_HasNextPage(void *a) { (void)a; return false; }
+EXPORT const char *ovr_PurchaseArray_GetNextUrl(void *a) { (void)a; return ""; }
+
 /* ---- Message queue ----------------------------------------------------- */
 
 EXPORT ovrMessageHandle ovr_PopMessage(void)
