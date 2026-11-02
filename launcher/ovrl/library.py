@@ -368,8 +368,10 @@ def sync_steam_status() -> dict:
         changed = False
         for g in all_games.values():
             now = str(Path(g["exe"]).parent.resolve()) in dirs
-            if bool(g.get("in_steam")) != now:
+            missing = not Path(g["exe"]).is_file()
+            if bool(g.get("in_steam")) != now or bool(g.get("missing")) != missing:
                 g["in_steam"] = now
+                g["missing"] = missing
                 changed = True
         if changed:
             _write("games.json", all_games)
@@ -381,8 +383,26 @@ def add_to_steam(app_ids: list[str] | None = None, log=print) -> list[str]:
     cfg = load_config()
     all_games = games()
     ids = app_ids if app_ids is not None else \
-        [i for i, g in all_games.items() if not g.get("in_steam")]
+        [i for i, g in all_games.items() if not g.get("in_steam") and not g.get("missing")]
     ids = [i for i in ids if i in all_games]
+    ready = []
+    for i in ids:
+        g = all_games[i]
+        exe = Path(g["exe"])
+        if not exe.is_file():
+            log(f"skipping {g.get('name', i)}: its game files aren't at {exe.parent} any more "
+                "(moved or deleted); reinstall it, or use Organize to move it back in")
+            continue
+        if not all((exe.parent / f).is_file() for f in (cli.INJECTOR, cli.SHIM_INJECT_NAME)):
+            log(f"{g.get('name', i)}: setting up the shim and injector first")
+            try:
+                _call(cli.stage_game, exe, cli.DEFAULT_BUILD, cfg.get("real_runtime"),
+                      cfg.get("real_platform"), cfg.get("openvr"), log=log)
+            except LibraryError as e:
+                log(f"skipping {g.get('name', i)}: {e}")
+                continue
+        ready.append(i)
+    ids = ready
     if not ids:
         log("nothing to add")
         return []

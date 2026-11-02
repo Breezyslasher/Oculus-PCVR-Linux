@@ -108,7 +108,8 @@ def state() -> dict:
         "log": S.log[-60:],
         "busy": S.busy,
         "steam_running": cli._steam_running(),
-        "queued": [g["name"] for g in installed.values() if not g.get("in_steam")],
+        "queued": [g["name"] for g in installed.values()
+                   if not g.get("in_steam") and not g.get("missing")],
         "config": library.load_config(),
         "config_keys": library.CONFIG_KEYS,
         "pick": PICK,
@@ -380,7 +381,7 @@ function draw(){const s=st;
   return `<tr><td>${esc(a.name)}<div class="mute">${a.id}${a.version?" · newest v"+esc(a.version):""}${g&&g.version?" · installed v"+esc(g.version):""}</div></td><td>${badge(a)}</td><td style="text-align:right">${act}</td></tr>`}).join("")
   :`<tr><td class="mute">${s.apps.length?"No matches.":"Press “Refresh library” to load the games you own."}</td></tr>`;
  const gs=Object.values(s.installed);
- document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
+ document.getElementById("games").innerHTML=gs.length?gs.map(g=>`<tr><td>${esc(g.name)}<div class="mute">${esc(g.engine)} · ${esc(g.exe)}</div><div class="mute">Log: ${esc(g.log)}</div></td><td>${g.missing?'<span class="badge unk" title="The game files are not at this path any more: reinstall, or use Organize">files missing</span>':g.in_steam?'<span class="badge pc">in Steam</span>':'<span class="badge unk">queued</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'log'})">Open log</button> <button class="sec" onclick="post('/api/open',{app_id:'${esc(g.app_id)}',what:'folder'})">Open folder</button></td></tr>`).join(""):'<tr><td class="mute">None yet.</td></tr>';
  document.getElementById("addq").disabled=!s.queued.length||s.steam_running;
  if(!s.logged_in)document.getElementById("login").hidden=false;
  document.getElementById("upd").disabled=!s.has_git||!!s.busy;
