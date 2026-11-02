@@ -232,6 +232,23 @@ def _folder_name(name: str, app_id: str) -> str:
     return "".join(w[:1].upper() + w[1:] for w in words) or app_id
 
 
+# Helper programs that ship beside games and are never the game itself.
+_NOT_THE_GAME = ("crashreport", "crashpad", "unrealcefsubprocess", "prereq", "vc_redist",
+                 "vcredist", "dxsetup", "dotnet", "unitycrashhandler", "uninstall", "setup",
+                 "ovrinject", "oculusredist", "easyanticheat", "launcher")
+
+
+def _unreal_root(dest: Path) -> Path | None:
+    """The folder holding an Unreal game's Engine/ dir: dest itself or one
+    level down (some builds wrap everything in a folder of their own)."""
+    if (dest / "Engine").is_dir():
+        return dest
+    for sub in sorted(p for p in dest.iterdir() if p.is_dir()):
+        if (sub / "Engine").is_dir():
+            return sub
+    return None
+
+
 def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
     """(exe to run, -hmd value, engine) for a downloaded Rift build.
 
@@ -240,21 +257,37 @@ def detect_exe(dest: Path, manifest: dict) -> tuple[Path, str, str]:
     would miss the game, so pick the shipping exe and pass the -hmd= name
     its Oculus plugin answers to (see cli.unreal_hmd_name).
     Unity's exe sits beside <exe>_Data and takes no -hmd.
+    Manifest paths use Windows separators; they're converted here.
     """
-    if (dest / "Engine").is_dir():
-        shipping = sorted(p for p in dest.glob("*/Binaries/Win64/*-Shipping.exe")
-                          if p.parts[-4] != "Engine")
+    root = _unreal_root(dest)
+    if root:
+        shipping = sorted(p for p in root.glob("*/Binaries/Win64/*.exe")
+                          if p.parts[-4] != "Engine" and
+                          not any(w in p.name.lower() for w in _NOT_THE_GAME))
+        # Prefer *-Shipping.exe; some games rename it (no "-Shipping").
+        shipping.sort(key=lambda p: (not p.stem.endswith("-Shipping"), p.name))
         if shipping:
-            return shipping[0], cli.unreal_hmd_name(dest), "Unreal"
-    launch = manifest.get("launchFile") or ""
-    exe = dest / launch if launch else None
-    if not exe or not exe.is_file():
-        exes = sorted(dest.glob("*.exe"))
-        if not exes:
-            raise LibraryError(f"no .exe found in {dest}")
-        exe = exes[0]
+            return shipping[0], cli.unreal_hmd_name(root), "Unreal"
+    launch = (manifest.get("launchFile") or "").replace("\\", "/").strip("/")
+    exe = dest.joinpath(*launch.split("/")) if launch else None
+    if exe and not exe.is_file():
+        # Case differences between the manifest and the files on disk.
+        found = [p for p in dest.rglob("*") if p.is_file() and
+                 p.relative_to(dest).as_posix().lower() == launch.lower()]
+        exe = found[0] if found else None
+    if not exe:
+        candidates = [p for p in dest.rglob("*.exe")
+                      if not any(w in p.name.lower() for w in _NOT_THE_GAME)]
+        if not candidates:
+            raise LibraryError(f"no .exe found in {dest} (launch file in the manifest: "
+                               f"{manifest.get('launchFile')!r})")
+        # Shallowest first, then the biggest (the game, not a tool).
+        candidates.sort(key=lambda p: (len(p.relative_to(dest).parts), -p.stat().st_size))
+        exe = candidates[0]
     if exe.with_name(exe.stem + "_Data").is_dir():
         return exe, "", "Unity"
+    if exe.parent.name == "Win64" and exe.parent.parent.name == "Binaries":
+        return exe, cli.unreal_hmd_name(exe.parents[3]), "Unreal"
     return exe, "OculusRift", "unknown"
 
 
