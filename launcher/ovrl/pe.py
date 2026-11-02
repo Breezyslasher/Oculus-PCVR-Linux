@@ -73,6 +73,36 @@ def exports(path: str | Path) -> list[str]:
     return sorted(result)
 
 
+def imports(path: str | Path) -> list[str]:
+    """Return the DLL names a PE file imports statically (lower-case).
+
+    These load with the process, before an injected DLL can redirect them."""
+    data = Path(path).read_bytes()
+    if data[:2] != b"MZ":
+        raise PEError(f"{path}: not a PE file")
+    pe_off, = struct.unpack_from("<I", data, 0x3C)
+    if data[pe_off:pe_off + 4] != b"PE\0\0":
+        raise PEError(f"{path}: bad PE signature")
+    opt = pe_off + 24
+    magic, = struct.unpack_from("<H", data, opt)
+    dir_off = opt + {0x10B: 96, 0x20B: 112}.get(magic, -1)
+    if dir_off < opt:
+        raise PEError(f"{path}: unknown optional header magic {magic:#x}")
+    import_rva, _ = struct.unpack_from("<II", data, dir_off + 8)
+    if not import_rva:
+        return []
+    sections = _sections(data, pe_off)
+    off = _rva_to_offset(import_rva, sections)
+    names = []
+    while off + 20 <= len(data):
+        name_rva, = struct.unpack_from("<I", data, off + 12)
+        if not name_rva:
+            break
+        names.append(_cstr(data, _rva_to_offset(name_rva, sections)).lower())
+        off += 20
+    return names
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__.strip())

@@ -687,7 +687,12 @@ def apply_meta_runtime(log=print) -> int:
         if rt:
             cli._install_file(Path(rt), d / cli.RUNTIME_DLL, "genuine runtime")
         if pf and (d / cli.PLATFORM_INJECT_NAME).is_file():
-            cli._install_file(Path(pf), d / cli.PLATFORM_DLL, "genuine Platform SDK")
+            if cli.links_platform_statically(d):
+                # Loaded before the shim can redirect it: must be our stub.
+                cli._install_file(d / cli.PLATFORM_INJECT_NAME, d / cli.PLATFORM_DLL,
+                                  "Platform stub (game links it directly)")
+            else:
+                cli._install_file(Path(pf), d / cli.PLATFORM_DLL, "genuine Platform SDK")
         n += 1
     log(f"put Meta's genuine DLLs beside {n} game(s)")
     return n

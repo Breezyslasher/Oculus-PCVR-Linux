@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from struct import error as struct_error
+
 from . import pe, steam, store
 from .download import download_build
 
@@ -92,6 +94,26 @@ def _install_file(src: Path, target: Path, label: str) -> None:
     print(f"installed {label} {target}")
 
 
+def links_platform_statically(game_dir: Path) -> bool:
+    """Whether a program in game_dir imports LibOVRPlatform64_1.dll directly.
+
+    Such a game (e.g. Google Earth VR) loads that DLL with the process,
+    before our injected shim can swap in the stub, so it must stay our stub:
+    Meta's genuine file would run and fail without the Oculus service."""
+    for f in game_dir.iterdir():
+        if f.suffix.lower() not in (".exe", ".dll") or not f.is_file():
+            continue
+        if f.name in (RUNTIME_DLL, PLATFORM_DLL, INJECTOR, SHIM_INJECT_NAME,
+                      PLATFORM_INJECT_NAME) or f.name.endswith(BACKUP_SUFFIX):
+            continue
+        try:
+            if PLATFORM_DLL.lower() in pe.imports(f):
+                return True
+        except (pe.PEError, OSError, ValueError, struct_error):
+            continue
+    return False
+
+
 def _install_stubs(game_dir: Path, build: Path,
                    real_runtime: str | None, real_platform: str | None) -> None:
     # The game's LibOVR loader often verifies a DLL is Meta-signed before
@@ -100,6 +122,9 @@ def _install_stubs(game_dir: Path, build: Path,
     # shim's LoadLibrary redirect still swaps our implementation in at load,
     # so Meta's service code never runs. When no real file is given for a
     # slot, our stub is installed there.
+    if real_platform and links_platform_statically(game_dir):
+        print(f"{game_dir}: the game links {PLATFORM_DLL} directly; keeping our stub there")
+        real_platform = None
     real = {RUNTIME_DLL: real_runtime, PLATFORM_DLL: real_platform}
     for name in (RUNTIME_DLL, PLATFORM_DLL):
         is_real = bool(real[name])
