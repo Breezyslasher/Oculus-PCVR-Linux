@@ -711,8 +711,22 @@ void vr_backend_log_compositor_state(long frame)
     }
 }
 
+/* PostPresentHandoff tells the compositor to start on the frame right away.
+ * OpenVR describes it as optional, for apps that can't call WaitGetPoses
+ * right after presenting; we always do, so native apps' behaviour is to
+ * skip it. Under Proton it could also start composition before the GPU has
+ * finished the frame we just handed over (one eye new, the other old):
+ * Oculus games judder in the headset while The Lab, through the same
+ * Proton path, is smooth. OVRSTUB_HANDOFF=1 calls it again. */
 void vr_backend_present(void)
 {
-    if (g_active)
+    static int handoff = -1;
+    if (handoff < 0) {
+        const char *v = getenv("OVRSTUB_HANDOFF");
+        handoff = v && *v == '1';
+        if (handoff)
+            LOG("OVRSTUB_HANDOFF=1: calling PostPresentHandoff after each frame");
+    }
+    if (g_active && handoff)
         g_compositor->PostPresentHandoff();
 }
