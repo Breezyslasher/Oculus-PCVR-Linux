@@ -297,6 +297,41 @@ EXPORT const char *ovr_User_GetImageUrl(ovrUserHandle u)
     return u ? u->image_url : "";
 }
 
+EXPORT const char *ovr_User_GetSmallImageUrl(ovrUserHandle u)
+{
+    return u ? u->image_url : "";
+}
+
+EXPORT const char *ovr_User_GetInviteToken(ovrUserHandle u)
+{
+    (void)u;
+    return "";
+}
+
+EXPORT const char *ovr_User_GetPresence(ovrUserHandle u)
+{
+    (void)u;
+    return "";
+}
+
+EXPORT const char *ovr_User_GetPresenceDeeplinkMessage(ovrUserHandle u)
+{
+    (void)u;
+    return "";
+}
+
+/* ovrUserPresenceStatus: 0 unknown, 1 online, 2 offline. */
+EXPORT int ovr_User_GetPresenceStatus(ovrUserHandle u)
+{
+    return u ? 1 : 0;
+}
+
+/* Voice chat is not available; muting is accepted and ignored. */
+EXPORT void ovr_Voip_SetMicrophoneMuted(int state)
+{
+    (void)state;
+}
+
 /* ---- Achievements ------------------------------------------------------ */
 /* Games ask for their achievement list at start-up and some wait for the
  * reply before loading. We answer with empty lists (no achievements, no
