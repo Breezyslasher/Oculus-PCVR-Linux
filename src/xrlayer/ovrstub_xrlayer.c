@@ -184,9 +184,46 @@ static PFN_xrLocateSpace g_next_locate_space;
 static PFN_xrPathToString g_path_to_string;
 static XrInstance g_instance;
 
-#define MAX_TRACED 16
-static struct { XrSpace space; char hand[96]; long calls; } g_traced[MAX_TRACED];
+#define MAX_TRACED 256
+static struct { XrSpace space; char hand[160]; long calls; } g_traced[MAX_TRACED];
 static int g_ntraced;
+
+/* Action handle -> name, from xrCreateAction. */
+typedef uint64_t XrActionSet;
+typedef struct {
+    XrStructureType type;
+    const void *next;
+    char actionName[64];
+    int32_t actionType;
+    uint32_t countSubactionPaths;
+    const XrPath *subactionPaths;
+    char localizedActionName[128];
+} XrActionCreateInfo;
+typedef XrResult (XRAPI_CALL *PFN_xrCreateAction)(XrActionSet, const XrActionCreateInfo *, XrAction *);
+static PFN_xrCreateAction g_next_create_action;
+#define MAX_ACTIONS 512
+static struct { XrAction action; char name[64]; } g_actions[MAX_ACTIONS];
+static int g_nactions;
+
+static XrResult XRAPI_CALL layer_create_action(XrActionSet set, const XrActionCreateInfo *info,
+                                               XrAction *action)
+{
+    XrResult r = g_next_create_action(set, info, action);
+    if (r == XR_SUCCESS && info && action && g_nactions < MAX_ACTIONS) {
+        g_actions[g_nactions].action = *action;
+        snprintf(g_actions[g_nactions].name, sizeof(g_actions[0].name), "%s", info->actionName);
+        g_nactions++;
+    }
+    return r;
+}
+
+static const char *action_name(XrAction a)
+{
+    for (int i = 0; i < g_nactions; i++)
+        if (g_actions[i].action == a)
+            return g_actions[i].name;
+    return "?";
+}
 
 static int tracing(void)
 {
@@ -200,17 +237,17 @@ static XrResult XRAPI_CALL layer_create_action_space(XrSession session,
 {
     XrResult r = g_next_create_action_space(session, info, space);
     char hand[96] = "(no subaction path)";
+    char label[160];
     if (info && info->subactionPath && g_path_to_string) {
         uint32_t n = 0;
         if (g_path_to_string(g_instance, info->subactionPath, sizeof(hand), &n, hand) != XR_SUCCESS)
             strcpy(hand, "?");
     }
-    LOG("xrCreateActionSpace(action %llx, %s) -> %d, space %llx",
-        info ? (unsigned long long)info->action : 0ULL, hand, (int)r,
-        space ? (unsigned long long)*space : 0ULL);
+    snprintf(label, sizeof(label), "%s %s", info ? action_name(info->action) : "?", hand);
+    LOG("xrCreateActionSpace(%s) -> %d", label, (int)r);
     if (r == XR_SUCCESS && space && g_ntraced < MAX_TRACED) {
         g_traced[g_ntraced].space = *space;
-        snprintf(g_traced[g_ntraced].hand, sizeof(g_traced[0].hand), "%s", hand);
+        snprintf(g_traced[g_ntraced].hand, sizeof(g_traced[0].hand), "%s", label);
         g_ntraced++;
     }
     return r;
@@ -295,7 +332,15 @@ static XrResult XRAPI_CALL layer_gipa(XrInstance instance, const char *name,
     if (r == XR_SUCCESS && function && *function && name && tracing()) {
         if (!strcmp(name, "xrPathToString"))
             g_path_to_string = (PFN_xrPathToString)(void *)*function;
-        if (!strcmp(name, "xrCreateActionSpace")) {
+        if (!strncmp(name, "xrLocateSpace", 13) || !strncmp(name, "xrLocateViews", 13)) {
+            static int seen;
+            if (seen++ < 8)
+                LOG("game looked up %s", name);
+        }
+        if (!strcmp(name, "xrCreateAction")) {
+            g_next_create_action = (PFN_xrCreateAction)(void *)*function;
+            *function = (PFN_xrVoidFunction)(void *)layer_create_action;
+        } else if (!strcmp(name, "xrCreateActionSpace")) {
             g_next_create_action_space = (PFN_xrCreateActionSpace)(void *)*function;
             *function = (PFN_xrVoidFunction)(void *)layer_create_action_space;
         } else if (!strcmp(name, "xrLocateSpace")) {
