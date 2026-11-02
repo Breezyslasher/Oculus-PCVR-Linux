@@ -239,13 +239,15 @@ _NOT_THE_GAME = ("crashreport", "crashpad", "unrealcefsubprocess", "prereq", "vc
 
 
 def _unreal_root(dest: Path) -> Path | None:
-    """The folder holding an Unreal game's Engine/ dir: dest itself or one
-    level down (some builds wrap everything in a folder of their own)."""
-    if (dest / "Engine").is_dir():
-        return dest
-    for sub in sorted(p for p in dest.iterdir() if p.is_dir()):
-        if (sub / "Engine").is_dir():
-            return sub
+    """The folder holding an Unreal game's Engine/ dir: dest itself or a
+    folder up to three levels down (builds are often wrapped in folders such
+    as WindowsNoEditor/). The shallowest one with a game exe wins."""
+    for pattern in ("Engine", "*/Engine", "*/*/Engine", "*/*/*/Engine"):
+        for engine in sorted(dest.glob(pattern)):
+            root = engine.parent
+            if engine.is_dir() and any(p.parts[-4] != "Engine"
+                                       for p in root.glob("*/Binaries/Win64/*.exe")):
+                return root
     return None
 
 
