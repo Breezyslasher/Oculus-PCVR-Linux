@@ -326,6 +326,56 @@ def install(app_id: str, token: str | None = None, on_progress=None,
     return game
 
 
+def steam_shortcut_dirs() -> set[str] | None:
+    """Folders of the games Steam has shortcuts for right now (from each
+    shortcut's Exe and StartDir), or None when shortcuts.vdf can't be read.
+
+    Steam rewrites shortcuts.vdf when you remove a non-Steam game, so this is
+    how we notice a game was taken out of Steam outside ovrl."""
+    cfg = load_config()
+    try:
+        _, user_dir = _call(cli.steam_user_dir, cfg.get("steam_root"), cfg.get("steam_user"))
+    except LibraryError:
+        return None
+    path = user_dir / "config" / "shortcuts.vdf"
+    if not path.is_file():
+        return set()
+    try:
+        top = cli.steam.parse_shortcuts(path.read_bytes())
+        entries = cli.steam.shortcuts_map(top)
+    except (ValueError, IndexError, OSError):
+        return None
+    dirs = set()
+    for item in entries:
+        for key in ("Exe", "StartDir"):
+            v = cli.steam._find(item[2], key)
+            if isinstance(v, str) and v.strip('" '):
+                p = Path(v.strip('" ').rstrip("/\\"))
+                d = p.parent if p.suffix.lower() == ".exe" else p
+                dirs.add(str(d.resolve()))
+    return dirs
+
+
+def sync_steam_status() -> dict:
+    """Update each installed game's in_steam flag from Steam's shortcuts
+    (a game removed in Steam shows as queued again; one added by hand shows
+    as in Steam). Returns the games."""
+    dirs = steam_shortcut_dirs()
+    with _lock:
+        all_games = games()
+        if dirs is None:
+            return all_games
+        changed = False
+        for g in all_games.values():
+            now = str(Path(g["exe"]).parent.resolve()) in dirs
+            if bool(g.get("in_steam")) != now:
+                g["in_steam"] = now
+                changed = True
+        if changed:
+            _write("games.json", all_games)
+    return all_games
+
+
 def add_to_steam(app_ids: list[str] | None = None, log=print) -> list[str]:
     """Add installed games (default: all not yet in Steam) in one write."""
     cfg = load_config()

@@ -100,7 +100,7 @@ def _check_unknown() -> None:
 def state() -> dict:
     lib = library.cached_library().get("apps", [])
     installed = {i: {**g, "log": str(Path(g["exe"]).parent / cli.log_name(Path(g["exe"])))}
-                 for i, g in library.games().items()}
+                 for i, g in library.sync_steam_status().items()}
     return {
         "apps": lib,
         "installed": installed,
