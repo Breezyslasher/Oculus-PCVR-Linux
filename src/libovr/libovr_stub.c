@@ -1092,6 +1092,51 @@ static void start_stall_watchdog(void)
         CloseHandle(t);
 }
 
+/* Map a game's eye image, drawn over FOV `g`, onto the headset's FOV:
+ * u runs linearly in tangent space from -LeftTan to +RightTan across the
+ * viewport, v from +UpTan (top) to -DownTan, or bottom-up where the
+ * viewport is measured from the bottom (GL, or the BottomLeft layer flag;
+ * any flip for the compositor is applied afterwards). */
+static void fov_correct_bounds(ovrEyeType eye, ovrFovPort g, int bottom_up,
+                               float *uMin, float *vMin, float *uMax, float *vMax)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("OVRSTUB_FOV_FIX");
+        enabled = !(v && *v == '0');
+    }
+    if (!enabled || !vr_backend_active())
+        return;
+    if (!(g.LeftTan + g.RightTan > 0.01f) || !(g.UpTan + g.DownTan > 0.01f))
+        return;   /* no usable FOV in the layer */
+    ovrFovPort c = vr_backend_fov(eye);
+    float dl = fabsf(c.LeftTan - g.LeftTan), dr = fabsf(c.RightTan - g.RightTan);
+    float du = fabsf(c.UpTan - g.UpTan), dd = fabsf(c.DownTan - g.DownTan);
+    static ovrFovPort logged[ovrEye_Count];
+    if (memcmp(&logged[eye], &g, sizeof(g))) {
+        logged[eye] = g;
+        LOG("eye %c: game FOV up/down/left/right %.2f/%.2f/%.2f/%.2f, headset "
+            "%.2f/%.2f/%.2f/%.2f%s", eye ? 'R' : 'L', g.UpTan, g.DownTan,
+            g.LeftTan, g.RightTan, c.UpTan, c.DownTan, c.LeftTan, c.RightTan,
+            (dl + dr + du + dd) > 0.004f ? " -> remapping" : " (match)");
+    }
+    if (dl + dr + du + dd <= 0.004f)
+        return;
+    float u0 = *uMin, du_ = *uMax - *uMin;
+    float gw = g.LeftTan + g.RightTan;
+    *uMin = u0 + (g.LeftTan - c.LeftTan) / gw * du_;
+    *uMax = u0 + (g.LeftTan + c.RightTan) / gw * du_;
+    float v0 = *vMin, dv = *vMax - *vMin;
+    float gh = g.UpTan + g.DownTan;
+    if (bottom_up) {      /* v grows upward: vMin is the bottom edge */
+        *vMin = v0 + (g.DownTan - c.DownTan) / gh * dv;
+        *vMax = v0 + (g.DownTan + c.UpTan) / gh * dv;
+    } else {              /* v grows downward: vMin is the top edge */
+        *vMin = v0 + (g.UpTan - c.UpTan) / gh * dv;
+        *vMax = v0 + (g.UpTan + c.DownTan) / gh * dv;
+    }
+}
+
 static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned count)
 {
     int submitted = 0;
@@ -1128,6 +1173,21 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 uMin = vMin = 0.0f;
                 uMax = vMax = 1.0f;
             }
+            int gl = swapchain_is_gl(chain);
+            static int gl_flip = -1;
+            if (gl_flip < 0) {
+                const char *v = getenv("OVRSTUB_GL_FLIP");
+                gl_flip = v && *v == '1';
+            }
+            /* The game drew this eye with its own field of view (the layer's
+             * Fov); SteamVR shows the texture over the headset's. When they
+             * differ, crop or extend the bounds so each direction lands where
+             * the headset shows it, else the picture is shifted, stretched or
+             * part of it is cut off. OVRSTUB_FOV_FIX=0 turns this off. */
+            if (h->Type != 5)
+                fov_correct_bounds((ovrEyeType)eye, l->Fov[eye],
+                                   gl || (h->Flags & 0x2) != 0,
+                                   &uMin, &vMin, &uMax, &vMax);
             /* ovrLayerFlag_TextureOriginAtBottomLeft (Unity and GL games):
              * the viewport is measured from the bottom and the image is
              * stored bottom-up. Mirroring v both maps the viewport and, as
@@ -1136,12 +1196,6 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
              * reads them that way, so GL chains skip this (the flag is how
              * LibOVR's GL samples say "OpenGL"); OVRSTUB_GL_FLIP=1 flips
              * them anyway, in case a game's image comes out upside down. */
-            int gl = swapchain_is_gl(chain);
-            static int gl_flip = -1;
-            if (gl_flip < 0) {
-                const char *v = getenv("OVRSTUB_GL_FLIP");
-                gl_flip = v && *v == '1';
-            }
             if (gl ? gl_flip : (h->Flags & 0x2) != 0) {
                 vMin = 1.0f - vMin;
                 vMax = 1.0f - vMax;
