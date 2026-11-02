@@ -276,19 +276,41 @@ EXPORT ovrResult ovr_GetSessionStatus(ovrSession session, ovrSessionStatus *stat
     return ovrSuccess;
 }
 
+/* Rift-era games (Asgard's Wrath) refuse to start, with "a pending hardware
+ * issue ... check that your Rift Sensors ... are connected", when no sensor
+ * is reported. A Quest tracks itself, so report one virtual sensor, as
+ * Meta's runtime does for Quest over Link: 2 m in front of the play
+ * area's origin, facing it. OVRSTUB_SENSORS=0 reports none. */
+static int virtual_sensor(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("OVRSTUB_SENSORS");
+        on = !(v && *v == '0');
+    }
+    return on && vr_backend_active();
+}
+
 EXPORT unsigned ovr_GetTrackerCount(ovrSession session)
 {
     TRACE_FIRST();
     (void)session;
-    return 0;
+    return virtual_sensor() ? 1 : 0;
 }
 
 EXPORT ovrTrackerDesc ovr_GetTrackerDesc(ovrSession session, unsigned index)
 {
     TRACE_FIRST();
     ovrTrackerDesc d;
-    (void)session; (void)index;
+    (void)session;
     memset(&d, 0, sizeof(d));
+    if (index == 0 && virtual_sensor()) {
+        /* Rift sensor-like frustum. */
+        d.FrustumHFovInRadians = 1.75f;
+        d.FrustumVFovInRadians = 1.29f;
+        d.FrustumNearZInMeters = 0.4f;
+        d.FrustumFarZInMeters = 4.0f;
+    }
     return d;
 }
 
@@ -296,8 +318,18 @@ EXPORT ovrTrackerPose ovr_GetTrackerPose(ovrSession session, unsigned index)
 {
     TRACE_FIRST();
     ovrTrackerPose p;
-    (void)session; (void)index;
+    (void)session;
     memset(&p, 0, sizeof(p));
+    p.Pose.Orientation.w = p.LeveledPose.Orientation.w = 1.0f;
+    if (index == 0 && virtual_sensor()) {
+        p.TrackerFlags = 0x0020 /* ovrTracker_Connected */ | 0x0004 /* PoseTracked */;
+        /* Facing the player: turned 180 degrees about the vertical axis. */
+        p.Pose.Orientation.y = 1.0f;
+        p.Pose.Orientation.w = 0.0f;
+        p.Pose.Position.y = vr_backend_origin_is_floor() ? 1.4f : 0.2f;
+        p.Pose.Position.z = -2.0f;
+        p.LeveledPose = p.Pose;
+    }
     return p;
 }
 
