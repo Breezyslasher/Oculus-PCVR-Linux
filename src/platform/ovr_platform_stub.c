@@ -193,6 +193,15 @@ EXPORT ovrRequest ovr_PlatformInitializeWindowsAsynchronousEx(
     return do_init_async(__func__, appId);
 }
 
+/* Unreal's OnlineSubsystemOculus (UE 4.19+, e.g. Vader Immortal) initializes
+ * through this; it returns the same result code as the Windows variant. Any
+ * extra arguments (engine version strings) are ignored. */
+EXPORT ovrPlatformInitializeResult ovr_PlatformInitializeUnrealWindows(
+    const char *appId)
+{
+    return do_init(__func__, appId);
+}
+
 /* Entry points used by the Unity Oculus.Platform wrapper. */
 EXPORT void ovr_UnityInitGlobals(void *loggingCallback)
 {
@@ -288,6 +297,172 @@ EXPORT const char *ovr_User_GetImageUrl(ovrUserHandle u)
     return u ? u->image_url : "";
 }
 
+/* ---- Achievements ------------------------------------------------------ */
+/* Games ask for their achievement list at start-up and some wait for the
+ * reply before loading. We answer with empty lists (no achievements, no
+ * progress) and accept every unlock without recording it. */
+
+struct stub_array {
+    int unused;
+};
+static struct stub_array g_empty_array;
+
+struct stub_achievement_update {
+    int unused;
+};
+static struct stub_achievement_update g_update;
+
+#define ACH_REPLY(name, fallback) \
+    post_reply(message_type(name, fallback), NULL, __func__)
+
+EXPORT ovrRequest ovr_Achievements_GetAllDefinitions(void)
+{
+    return ACH_REPLY("ACHIEVEMENTS_GET_ALL_DEFINITIONS",
+                     MSGTYPE_ACHIEVEMENTS_GET_ALL_DEFINITIONS);
+}
+
+EXPORT ovrRequest ovr_Achievements_GetAllProgress(void)
+{
+    return ACH_REPLY("ACHIEVEMENTS_GET_ALL_PROGRESS",
+                     MSGTYPE_ACHIEVEMENTS_GET_ALL_PROGRESS);
+}
+
+EXPORT ovrRequest ovr_Achievements_GetDefinitionsByName(const char **names,
+                                                        int count)
+{
+    (void)names;
+    (void)count;
+    return ACH_REPLY("ACHIEVEMENTS_GET_DEFINITIONS_BY_NAME",
+                     MSGTYPE_ACHIEVEMENTS_GET_DEFINITIONS_BY_NAME);
+}
+
+EXPORT ovrRequest ovr_Achievements_GetProgressByName(const char **names,
+                                                     int count)
+{
+    (void)names;
+    (void)count;
+    return ACH_REPLY("ACHIEVEMENTS_GET_PROGRESS_BY_NAME",
+                     MSGTYPE_ACHIEVEMENTS_GET_PROGRESS_BY_NAME);
+}
+
+EXPORT ovrRequest ovr_Achievements_GetNextAchievementDefinitionArrayPage(
+    void *handle)
+{
+    (void)handle;
+    return ACH_REPLY("ACHIEVEMENTS_GET_NEXT_DEFINITION_PAGE",
+                     MSGTYPE_ACHIEVEMENTS_GET_NEXT_DEFINITION_PAGE);
+}
+
+EXPORT ovrRequest ovr_Achievements_GetNextAchievementProgressArrayPage(
+    void *handle)
+{
+    (void)handle;
+    return ACH_REPLY("ACHIEVEMENTS_GET_NEXT_PROGRESS_PAGE",
+                     MSGTYPE_ACHIEVEMENTS_GET_NEXT_PROGRESS_PAGE);
+}
+
+EXPORT ovrRequest ovr_Achievements_Unlock(const char *name)
+{
+    LOG("%s(%s)", __func__, name ? name : "(null)");
+    return ACH_REPLY("ACHIEVEMENTS_UNLOCK", MSGTYPE_ACHIEVEMENTS_UNLOCK);
+}
+
+EXPORT ovrRequest ovr_Achievements_AddCount(const char *name,
+                                            unsigned long long count)
+{
+    (void)count;
+    (void)name;
+    return ACH_REPLY("ACHIEVEMENTS_ADD_COUNT", MSGTYPE_ACHIEVEMENTS_ADD_COUNT);
+}
+
+EXPORT ovrRequest ovr_Achievements_AddFields(const char *name,
+                                             const char *fields)
+{
+    (void)fields;
+    (void)name;
+    return ACH_REPLY("ACHIEVEMENTS_ADD_FIELDS", MSGTYPE_ACHIEVEMENTS_ADD_FIELDS);
+}
+
+EXPORT void *ovr_Message_GetAchievementDefinitionArray(ovrMessageHandle m)
+{
+    (void)m;
+    return &g_empty_array;
+}
+
+EXPORT void *ovr_Message_GetAchievementProgressArray(ovrMessageHandle m)
+{
+    (void)m;
+    return &g_empty_array;
+}
+
+EXPORT void *ovr_Message_GetAchievementUpdate(ovrMessageHandle m)
+{
+    (void)m;
+    return &g_update;
+}
+
+EXPORT size_t ovr_AchievementDefinitionArray_GetSize(void *a)
+{
+    (void)a;
+    return 0;
+}
+
+EXPORT void *ovr_AchievementDefinitionArray_GetElement(void *a, size_t i)
+{
+    (void)a;
+    (void)i;
+    return NULL;
+}
+
+EXPORT bool ovr_AchievementDefinitionArray_HasNextPage(void *a)
+{
+    (void)a;
+    return false;
+}
+
+EXPORT const char *ovr_AchievementDefinitionArray_GetNextUrl(void *a)
+{
+    (void)a;
+    return "";
+}
+
+EXPORT size_t ovr_AchievementProgressArray_GetSize(void *a)
+{
+    (void)a;
+    return 0;
+}
+
+EXPORT void *ovr_AchievementProgressArray_GetElement(void *a, size_t i)
+{
+    (void)a;
+    (void)i;
+    return NULL;
+}
+
+EXPORT bool ovr_AchievementProgressArray_HasNextPage(void *a)
+{
+    (void)a;
+    return false;
+}
+
+EXPORT const char *ovr_AchievementProgressArray_GetNextUrl(void *a)
+{
+    (void)a;
+    return "";
+}
+
+EXPORT bool ovr_AchievementUpdate_GetJustUnlocked(void *u)
+{
+    (void)u;
+    return false;
+}
+
+EXPORT const char *ovr_AchievementUpdate_GetName(void *u)
+{
+    (void)u;
+    return "";
+}
+
 /* ---- Message queue ----------------------------------------------------- */
 
 EXPORT ovrMessageHandle ovr_PopMessage(void)
@@ -301,6 +476,9 @@ EXPORT ovrMessageHandle ovr_PopMessage(void)
         m->next = NULL;
     }
     LeaveCriticalSection(&g_lock);
+    if (m)
+        LOG("game picked up reply %llu (type 0x%08X)",
+            (unsigned long long)m->request_id, m->type);
     return m;
 }
 
