@@ -1179,6 +1179,25 @@ static ovrResult submit_layers(const ovrLayerHeader *const *layers, unsigned cou
                 const char *v = getenv("OVRSTUB_GL_FLIP");
                 gl_flip = v && *v == '1';
             }
+            /* A GL game drawing both eyes into one texture: give the right
+             * eye a copy of its half, since the same GL texture submitted
+             * twice shows only the first eye (Google Earth VR's blank right
+             * eye). OVRSTUB_GL_EYE_COPY=0 turns this off. */
+            static int gl_eye_copy = -1;
+            if (gl_eye_copy < 0) {
+                const char *v = getenv("OVRSTUB_GL_EYE_COPY");
+                gl_eye_copy = !(v && *v == '0');
+            }
+            if (gl && gl_eye_copy && eye == ovrEye_Right && vp.Size.w > 0 &&
+                vp.Size.h > 0 && chain == (l->ColorTexture[0] ? l->ColorTexture[0] : chain)) {
+                unsigned copy = swapchain_gl_eye_copy(chain, vp.Pos.x, vp.Pos.y,
+                                                      vp.Size.w, vp.Size.h);
+                if (copy) {
+                    tex = (void *)(uintptr_t)copy;
+                    uMin = vMin = 0.0f;
+                    uMax = vMax = 1.0f;
+                }
+            }
             /* The game drew this eye with its own field of view (the layer's
              * Fov); SteamVR shows the texture over the headset's. When they
              * differ, crop or extend the bounds so each direction lands where

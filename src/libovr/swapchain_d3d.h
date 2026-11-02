@@ -25,6 +25,7 @@ void swapchain_d3d_destroy(ovrTextureSwapChain chain);
 ovrTextureSwapChain swapchain_gl_create(const ovrTextureSwapChainDesc *desc);
 int swapchain_is_gl(ovrTextureSwapChain chain);
 unsigned swapchain_gl_buffer(ovrTextureSwapChain chain, int index);
+unsigned swapchain_gl_eye_copy(ovrTextureSwapChain chain, int x, int y, int w, int h);
 /* True if `chain` is a live swap chain we created. Lets callers validate a
  * pointer read from a game struct before using it. */
 int swapchain_d3d_known(ovrTextureSwapChain chain);

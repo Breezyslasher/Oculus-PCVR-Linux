@@ -42,6 +42,9 @@ struct ovrTextureSwapChainData {
     int committed;      /* last index committed, or -1 */
     int width, height;
     DXGI_FORMAT format;
+    unsigned gl_internal;               /* GL chains: sized internal format */
+    unsigned gl_eye_tex;                /* GL: right-eye copy (shared texture) */
+    int gl_eye_w, gl_eye_h;
 };
 
 /* Map a LibOVR texture format to a DXGI format. With the Typeless misc flag
@@ -232,6 +235,15 @@ static struct {
                               const void *);
     void (WINAPI *GetIntegerv)(unsigned, int *);
     void (WINAPI *TexStorage2D)(unsigned, int, unsigned, int, int);
+    /* For copying one eye out of a shared texture (GL 4.3, else 3.0 FBOs). */
+    void (WINAPI *CopyImageSubData)(unsigned, unsigned, int, int, int, int,
+                                    unsigned, unsigned, int, int, int, int,
+                                    int, int, int);
+    void (WINAPI *GenFramebuffers)(int, unsigned *);
+    void (WINAPI *BindFramebuffer)(unsigned, unsigned);
+    void (WINAPI *FramebufferTexture2D)(unsigned, unsigned, unsigned, unsigned, int);
+    void (WINAPI *BlitFramebuffer)(int, int, int, int, int, int, int, int,
+                                   unsigned, unsigned);
 } gl;
 
 static int gl_load(void)
@@ -251,6 +263,13 @@ static int gl_load(void)
     /* GL 4.2 / ARB_texture_storage: only through wglGetProcAddress, which
      * needs the game's context current (it is, when it creates a chain). */
     gl.TexStorage2D = get_proc ? (void *)get_proc("glTexStorage2D") : NULL;
+    if (get_proc) {
+        gl.CopyImageSubData = (void *)get_proc("glCopyImageSubData");
+        gl.GenFramebuffers = (void *)get_proc("glGenFramebuffers");
+        gl.BindFramebuffer = (void *)get_proc("glBindFramebuffer");
+        gl.FramebufferTexture2D = (void *)get_proc("glFramebufferTexture2D");
+        gl.BlitFramebuffer = (void *)get_proc("glBlitFramebuffer");
+    }
     gl.loaded = gl.GenTextures && gl.DeleteTextures && gl.BindTexture &&
                 gl.TexParameteri && gl.TexImage2D && gl.GetIntegerv ? 1 : -1;
     if (gl.loaded < 0)
@@ -313,6 +332,7 @@ ovrTextureSwapChain swapchain_gl_create(const ovrTextureSwapChainDesc *desc)
     c->height = desc->Height;
     int levels = desc->MipLevels > 0 ? desc->MipLevels : 1;
     unsigned fmt, type, internal = gl_internal_format(desc->Format, &fmt, &type);
+    c->gl_internal = internal;
 
     int prev = 0;
     gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
@@ -350,6 +370,77 @@ int swapchain_is_gl(ovrTextureSwapChain chain)
     return c && c->gl;
 }
 
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_NEAREST 0x2600
+
+/* Copy region (x, y, w, h) of the committed texture into a texture of its
+ * own and return that texture's name (0 on failure). Used when a GL game
+ * draws both eyes into one texture: SteamVR, under Proton, shows only the
+ * first eye when the same GL texture is submitted twice in a frame. */
+unsigned swapchain_gl_eye_copy(ovrTextureSwapChain chain, int x, int y, int w, int h)
+{
+    struct ovrTextureSwapChainData *c = (void *)chain;
+    if (!c || !c->gl || w <= 0 || h <= 0)
+        return 0;
+    if (!gl.CopyImageSubData && !(gl.GenFramebuffers && gl.BindFramebuffer &&
+                                  gl.FramebufferTexture2D && gl.BlitFramebuffer))
+        return 0;
+    int prev = 0;
+    if (!c->gl_eye_tex || c->gl_eye_w != w || c->gl_eye_h != h) {
+        if (c->gl_eye_tex)
+            gl.DeleteTextures(1, &c->gl_eye_tex);
+        c->gl_eye_tex = 0;
+        gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+        gl.GenTextures(1, &c->gl_eye_tex);
+        gl.BindTexture(GL_TEXTURE_2D, c->gl_eye_tex);
+        if (gl.TexStorage2D) {
+            gl.TexStorage2D(GL_TEXTURE_2D, 1, c->gl_internal, w, h);
+        } else {
+            gl.TexImage2D(GL_TEXTURE_2D, 0, (int)c->gl_internal, w, h, 0, GL_RGBA,
+                          GL_UNSIGNED_BYTE, NULL);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        }
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        gl.BindTexture(GL_TEXTURE_2D, (unsigned)prev);
+        c->gl_eye_w = w;
+        c->gl_eye_h = h;
+        LOG("GL chain %p: copying the right eye (%dx%d) into its own texture %u "
+            "(%s)", (void *)c, w, h, c->gl_eye_tex,
+            gl.CopyImageSubData ? "glCopyImageSubData" : "framebuffer blit");
+    }
+    if (!c->gl_eye_tex)
+        return 0;
+    unsigned src = c->gl_tex[c->committed >= 0 ? c->committed : 0];
+    if (gl.CopyImageSubData) {
+        gl.CopyImageSubData(src, GL_TEXTURE_2D, 0, x, y, 0,
+                            c->gl_eye_tex, GL_TEXTURE_2D, 0, 0, 0, 0, w, h, 1);
+    } else {
+        static unsigned fbo[2];
+        if (!fbo[0])
+            gl.GenFramebuffers(2, fbo);
+        int prev_read = 0, prev_draw = 0;
+        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+        gl.FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, src, 0);
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+        gl.FramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, c->gl_eye_tex, 0);
+        gl.BlitFramebuffer(x, y, x + w, y + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT,
+                           GL_NEAREST);
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, (unsigned)prev_read);
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, (unsigned)prev_draw);
+    }
+    return c->gl_eye_tex;
+}
+
 unsigned swapchain_gl_buffer(ovrTextureSwapChain chain, int index)
 {
     struct ovrTextureSwapChainData *c = (void *)chain;
@@ -364,8 +455,11 @@ void swapchain_d3d_destroy(ovrTextureSwapChain chain)
     if (!c)
         return;
     live_set(c, NULL);
-    if (c->gl && gl.DeleteTextures)
+    if (c->gl && gl.DeleteTextures) {
         gl.DeleteTextures(c->length, c->gl_tex);
+        if (c->gl_eye_tex)
+            gl.DeleteTextures(1, &c->gl_eye_tex);
+    }
     for (int i = 0; i < MAX_CHAIN_LENGTH; i++)
         if (c->textures[i])
             ID3D11Texture2D_Release(c->textures[i]);
