@@ -38,6 +38,25 @@ static struct VR_IVRSystem_FnTable *g_system;
 static struct VR_IVRCompositor_FnTable *g_compositor;
 static int g_active;
 
+/* The poses SteamVR's WaitGetPoses returned for the coming frame: what
+ * native SteamVR games render with (already predicted to when the frame
+ * will be shown, Steam Link's delay included). OVRSTUB_POSES=compositor
+ * hands these to the game instead of our own prediction, to compare. */
+static TrackedDevicePose_t g_render_poses[64];   /* k_unMaxTrackedDeviceCount */
+static volatile LONG g_have_render_poses;
+
+static int use_compositor_poses(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        const char *v = getenv("OVRSTUB_POSES");
+        mode = v && !strcmp(v, "compositor");
+        if (mode)
+            LOG("OVRSTUB_POSES=compositor: rendering with WaitGetPoses' poses");
+    }
+    return mode;
+}
+
 static void *resolve(HMODULE m, const char *name)
 {
     return (void *)GetProcAddress(m, name);
@@ -435,9 +454,14 @@ ovrPoseStatef vr_backend_head_pose(float predict_seconds)
     memset(poses, 0, sizeof(poses));
     /* Standing-space poses, predicted to the time the caller asked about
      * (usually when its frame will be displayed). */
-    g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
-        k_unMaxTrackedDeviceCount);
+    /* A render-time query (predicting ahead) may take the compositor's
+     * own frame poses instead; "now" queries always read live tracking. */
+    if (predict_seconds > 0.0f && use_compositor_poses() && g_have_render_poses)
+        memcpy(poses, g_render_poses, sizeof(poses));
+    else
+        g_system->GetDeviceToAbsoluteTrackingPose(
+            ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
+            k_unMaxTrackedDeviceCount);
 
     const TrackedDevicePose_t *hmd = &poses[k_unTrackedDeviceIndex_Hmd];
     if (hmd->bPoseIsValid) {
@@ -490,9 +514,12 @@ bool vr_backend_controller(int hand, struct vr_controller *out, float predict_se
     }
     TrackedDevicePose_t poses[k_unMaxTrackedDeviceCount];
     memset(poses, 0, sizeof(poses));
-    g_system->GetDeviceToAbsoluteTrackingPose(
-        ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
-        k_unMaxTrackedDeviceCount);
+    if (predict_seconds > 0.0f && use_compositor_poses() && g_have_render_poses)
+        memcpy(poses, g_render_poses, sizeof(poses));
+    else
+        g_system->GetDeviceToAbsoluteTrackingPose(
+            ETrackingUniverseOrigin_TrackingUniverseStanding, predict_seconds, poses,
+            k_unMaxTrackedDeviceCount);
     if (poses[idx].bPoseIsValid) {
         fill_pose_state(&out->pose, &poses[idx]);
         to_game_space(&out->pose);
@@ -521,6 +548,9 @@ bool vr_backend_begin_frame(void)
         static int logged;
         if (logged++ < 5)
             LOG("compositor WaitGetPoses failed: %d", (int)e);
+    } else {
+        memcpy(g_render_poses, render, sizeof(g_render_poses));
+        InterlockedExchange(&g_have_render_poses, 1);
     }
     return e == EVRCompositorError_VRCompositorError_None;
 }
@@ -613,7 +643,15 @@ bool vr_backend_submit_eye(ovrEyeType eye, void *texture, int is_gl,
      * from the one the game predicted, and the view warps and shifts as
      * the head moves. LibOVR's RenderPose is the eye's pose; the compositor
      * wants the HMD's, so remove the eye-to-head offset. */
-    const ovrQuatf *q = render_pose ? &render_pose->Orientation : NULL;
+    /* OVRSTUB_TEXPOSE=0 submits without the render pose, to compare. */
+    static int texpose = -1;
+    if (texpose < 0) {
+        const char *v = getenv("OVRSTUB_TEXPOSE");
+        texpose = !(v && *v == '0');
+        if (!texpose)
+            LOG("OVRSTUB_TEXPOSE=0: submitting frames without their render pose");
+    }
+    const ovrQuatf *q = render_pose && texpose ? &render_pose->Orientation : NULL;
     if (q && q->x * q->x + q->y * q->y + q->z * q->z + q->w * q->w > 0.5f) {
         struct VRTextureWithPose_t tp;
         tp.handle = tex.handle;
@@ -673,8 +711,22 @@ void vr_backend_log_compositor_state(long frame)
     }
 }
 
+/* PostPresentHandoff tells the compositor to start on the frame right away.
+ * OpenVR describes it as optional, for apps that can't call WaitGetPoses
+ * right after presenting; we always do, so native apps' behaviour is to
+ * skip it. Under Proton it could also start composition before the GPU has
+ * finished the frame we just handed over (one eye new, the other old):
+ * Oculus games judder in the headset while The Lab, through the same
+ * Proton path, is smooth. OVRSTUB_HANDOFF=1 calls it again. */
 void vr_backend_present(void)
 {
-    if (g_active)
+    static int handoff = -1;
+    if (handoff < 0) {
+        const char *v = getenv("OVRSTUB_HANDOFF");
+        handoff = v && *v == '1';
+        if (handoff)
+            LOG("OVRSTUB_HANDOFF=1: calling PostPresentHandoff after each frame");
+    }
+    if (g_active && handoff)
         g_compositor->PostPresentHandoff();
 }
