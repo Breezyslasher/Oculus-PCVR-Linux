@@ -15,6 +15,15 @@
  * Names are separated by commas, spaces or semicolons. The game still
  * believes the extension is on; its calls that depend on it fail cleanly
  * (e.g. suggesting bindings for that profile returns PATH_UNSUPPORTED).
+ * Not every game copes with that: BONELAB crashes at start without
+ * XR_EXT_hand_tracking. For hand tracking there is a gentler switch,
+ *
+ *   OVRSTUB_XR_NO_HAND_JOINTS=1
+ *
+ * which keeps the extension but reports every hand as not tracked
+ * (xrLocateHandJointsEXT isActive = false), so a game falls back to its
+ * controllers instead of freezing its hands on joint data that never moves
+ * (SteamVR over Steam Link offers hand joints even with hand tracking off).
  *
  * The shim registers this layer as an implicit layer in the game's Wine
  * prefix (see register_xr_layer in libovr_stub.c); its manifest sets
@@ -127,6 +136,41 @@ struct XrApiLayerCreateInfo {
 
 static PFN_xrGetInstanceProcAddr g_next_gipa;
 
+/* XR_EXT_hand_tracking: only the fields we touch. */
+typedef uint64_t XrHandTrackerEXT;
+typedef struct {
+    XrStructureType type;
+    void *next;
+    uint32_t isActive;      /* XrBool32 */
+    uint32_t jointCount;
+    void *jointLocations;
+} XrHandJointLocationsEXT;
+typedef XrResult (XRAPI_CALL *PFN_xrLocateHandJointsEXT)(XrHandTrackerEXT, const void *,
+                                                         XrHandJointLocationsEXT *);
+static PFN_xrLocateHandJointsEXT g_next_locate_joints;
+
+static int no_hand_joints(void)
+{
+    const char *v = getenv("OVRSTUB_XR_NO_HAND_JOINTS");
+    return v && *v && *v != '0';
+}
+
+static XrResult XRAPI_CALL layer_locate_hand_joints(XrHandTrackerEXT tracker,
+                                                    const void *info,
+                                                    XrHandJointLocationsEXT *locations)
+{
+    XrResult r = g_next_locate_joints(tracker, info, locations);
+    if (r == XR_SUCCESS && locations && locations->isActive) {
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            LOG("reporting hand joints as not tracked (OVRSTUB_XR_NO_HAND_JOINTS)");
+        }
+        locations->isActive = 0;
+    }
+    return r;
+}
+
 /* Whether `name` appears in the OVRSTUB_XR_STRIP list. */
 static int stripped(const char *name)
 {
@@ -155,7 +199,13 @@ static XrResult XRAPI_CALL layer_gipa(XrInstance instance, const char *name,
             *function = NULL;
         return instance ? XR_ERROR_HANDLE_INVALID : XR_ERROR_FUNCTION_UNSUPPORTED;
     }
-    return g_next_gipa(instance, name, function);
+    XrResult r = g_next_gipa(instance, name, function);
+    if (r == XR_SUCCESS && function && *function && name &&
+        !strcmp(name, "xrLocateHandJointsEXT") && no_hand_joints()) {
+        g_next_locate_joints = (PFN_xrLocateHandJointsEXT)(void *)*function;
+        *function = (PFN_xrVoidFunction)(void *)layer_locate_hand_joints;
+    }
+    return r;
 }
 
 static XrResult XRAPI_CALL layer_create_instance(const XrInstanceCreateInfo *info,
@@ -208,6 +258,7 @@ EXPORT XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(
     request->layerApiVersion = XR_MAKE_VERSION(1, 0, 0);
     request->getInstanceProcAddr = layer_gipa;
     request->createApiLayerInstance = layer_create_instance;
-    LOG("loaded; hiding: %s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)");
+    LOG("loaded; hiding: %s%s", getenv("OVRSTUB_XR_STRIP") ? getenv("OVRSTUB_XR_STRIP") : "(nothing)",
+        no_hand_joints() ? "; hand joints reported as not tracked" : "");
     return XR_SUCCESS;
 }

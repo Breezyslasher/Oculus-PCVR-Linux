@@ -1854,7 +1854,7 @@ static void ensure_oculus_registry(HINSTANCE self)
     }
 }
 
-/* With OVRSTUB_XR_STRIP set, make the OpenXR loader in this game pick up
+/* With OVRSTUB_XR_STRIP or OVRSTUB_XR_NO_HAND_JOINTS set, make the OpenXR loader in this game pick up
  * our ovrstub_xrlayer.dll (beside this DLL): write its manifest next to it
  * and list that as an implicit API layer in the prefix's registry. The
  * manifest's enable_environment keeps the layer off for games launched
@@ -1862,8 +1862,16 @@ static void ensure_oculus_registry(HINSTANCE self)
 static void register_xr_layer(HINSTANCE self)
 {
     const char *strip = getenv("OVRSTUB_XR_STRIP");
-    if (!strip || !*strip)
+    const char *nojoints = getenv("OVRSTUB_XR_NO_HAND_JOINTS");
+    int want = (strip && *strip) || (nojoints && *nojoints && *nojoints != '0');
+    if (!want)
         return;
+    if (!strip || !*strip) {
+        /* The manifest enables the layer through this variable. */
+        SetEnvironmentVariableA("OVRSTUB_XR_STRIP", ",");
+        _putenv("OVRSTUB_XR_STRIP=,");
+        strip = "(nothing)";
+    }
     wchar_t path[MAX_PATH];
     DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
     while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')

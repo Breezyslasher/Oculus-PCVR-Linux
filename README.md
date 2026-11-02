@@ -297,7 +297,18 @@ the variable, for example BONELAB with its hands stuck at the player's sides:
 OVRSTUB_XR_STRIP=XR_EXT_hand_interaction OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "BONELAB_Oculus_Windows64.exe"
 ```
 
-Separate several names with commas. The shim writes the layer's manifest
+Separate several names with commas. Not every game survives losing an
+extension: BONELAB crashes at start without `XR_EXT_hand_tracking`. For
+hand tracking use `OVRSTUB_XR_NO_HAND_JOINTS=1` instead, which keeps the
+extension but reports the hands as untracked, so the game uses the
+controllers (SteamVR over Steam Link otherwise feeds it hand joints that
+never move, freezing the hands):
+
+```
+OVRSTUB_XR_STRIP=XR_EXT_hand_interaction OVRSTUB_XR_NO_HAND_JOINTS=1 OVRSTUB_INSTALL_ROOT_CA=1 %command% --wait ovrstub_shim.dll -- "BONELAB_Oculus_Windows64.exe"
+```
+
+The shim writes the layer's manifest
 and registers it in the game's prefix at start-up; the log shows
 `[xr-layer] hiding ...` for each extension removed.
 
